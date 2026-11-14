@@ -85,9 +85,15 @@ async function executePaymentWithRetry(page, options) {
     const lastUsedIdRaw = await store.getAppConfigValue('last_used_address_id', null);
     const lastUsedId = lastUsedIdRaw ? Number(lastUsedIdRaw) : null;
 
-    const address = await pickBillingAddressForCheckout(lastUsedId);
+    let address;
+    try {
+        address = await pickBillingAddressForCheckout(region, lastUsedId);
+    } catch (error) {
+        progress(`无法选取账单地址: ${error.message}`);
+        return { success: false, error: error.message };
+    }
     const addressSource = address.generated ? '随机生成' : `地址池 #${address.id}`;
-    progress(`已选取美国免税账单地址 (${addressSource}): ${address.line1}, ${address.city}, ${address.state}`);
+    progress(`已选取美国免税账单地址 (${addressSource}): ${address.line1}, ${address.city}, ${address.state}, ${address.country}`);
 
     const ownerKey = cdkCode
         ? `payment_${cdkCode}_${Date.now()}`

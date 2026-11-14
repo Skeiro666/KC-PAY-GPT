@@ -6,11 +6,19 @@
 
 const { connectStandaloneBrowser } = require('./browser-standalone');
 const { connectPoolBrowser } = require('./browser-pool-client');
+const { openBitBrowserProfile } = require('./bitbrowser-client');
+
+function isBitBrowserProvider(env = process.env) {
+    return String(env.BROWSER_PROVIDER || '').trim().toLowerCase() === 'bitbrowser';
+}
 
 function resolveBrowserRuntimeMode(env = process.env) {
     const explicit = String(env.BROWSER_RUNTIME_MODE || '').trim().toLowerCase();
-    if (explicit === 'pool' || explicit === 'standalone') {
+    if (explicit === 'pool' || explicit === 'standalone' || explicit === 'bitbrowser') {
         return explicit;
+    }
+    if (isBitBrowserProvider(env)) {
+        return 'bitbrowser';
     }
     const poolCdpUrl = String(env.BROWSER_POOL_CDP_URL || '').trim();
     if (env.BROWSER_POOL === '1' && poolCdpUrl) {
@@ -25,6 +33,10 @@ function resolveBrowserRuntimeMode(env = process.env) {
 async function connectTaskBrowser(options = {}) {
     const env = options.env || process.env;
     const mode = resolveBrowserRuntimeMode(env);
+
+    if (mode === 'bitbrowser') {
+        return openBitBrowserProfile({ env });
+    }
 
     if (mode === 'pool') {
         return connectPoolBrowser({
@@ -55,6 +67,10 @@ async function closeTaskBrowser(session, browser) {
     if (!browser) {
         return;
     }
+    if (typeof session?.close === 'function') {
+        await session.close().catch(() => {});
+        return;
+    }
     if (session?.ownsBrowser) {
         await browser.close().catch(() => {});
         return;
@@ -63,6 +79,16 @@ async function closeTaskBrowser(session, browser) {
 }
 
 function buildWorkerRuntimeEnv(baseEnv, slot, mode) {
+    if (mode === 'bitbrowser') {
+        return {
+            ...baseEnv,
+            BROWSER_RUNTIME_MODE: 'bitbrowser',
+            BROWSER_PROVIDER: 'bitbrowser',
+            BROWSER_POOL: '0',
+            BROWSER_POOL_CDP_URL: '',
+            BROWSER_POOL_SLOT: ''
+        };
+    }
     if (mode === 'pool' && slot) {
         return {
             ...baseEnv,
@@ -84,6 +110,7 @@ function buildWorkerRuntimeEnv(baseEnv, slot, mode) {
 }
 
 module.exports = {
+    isBitBrowserProvider,
     resolveBrowserRuntimeMode,
     connectTaskBrowser,
     applyCdpEnv,

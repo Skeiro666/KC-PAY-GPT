@@ -25,10 +25,16 @@ CREATE TABLE IF NOT EXISTS phone_assets (
 
 CREATE TABLE IF NOT EXISTS card_assets (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    card_number VARCHAR(32) NOT NULL,
-    card_expiry VARCHAR(16) NOT NULL DEFAULT '',
-    card_cvc VARCHAR(16) NOT NULL DEFAULT '',
-    card_holder VARCHAR(128) NOT NULL DEFAULT '' COMMENT '持卡人姓名',
+    card_number VARCHAR(32) NOT NULL DEFAULT '' COMMENT '旧版明文字段，已迁移后置空',
+    card_expiry VARCHAR(16) NOT NULL DEFAULT '' COMMENT '旧版明文字段，已迁移后置空',
+    card_cvc VARCHAR(16) NOT NULL DEFAULT '' COMMENT '旧版明文字段，已迁移后置空',
+    card_holder VARCHAR(128) NOT NULL DEFAULT '' COMMENT '旧版明文字段，已迁移后置空',
+    card_number_enc TEXT NULL COMMENT 'AES-256-GCM 加密卡号',
+    card_expiry_enc TEXT NULL COMMENT 'AES-256-GCM 加密有效期',
+    card_cvc_enc TEXT NULL COMMENT 'AES-256-GCM 加密 CVC',
+    card_holder_enc TEXT NULL COMMENT 'AES-256-GCM 加密持卡人',
+    card_last4 VARCHAR(4) NULL COMMENT '卡号后四位',
+    card_number_hash CHAR(64) NULL COMMENT '卡号 SHA256，用于去重',
     usage_count INT NOT NULL DEFAULT 0,
     sort_order INT NOT NULL DEFAULT 0,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
@@ -43,7 +49,8 @@ CREATE TABLE IF NOT EXISTS card_assets (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_card_assets_sort (sort_order, id),
-    KEY idx_card_assets_pick (is_active, in_use, locked_at, usage_count)
+    KEY idx_card_assets_pick (is_active, in_use, locked_at, usage_count),
+    KEY idx_card_assets_number_hash (card_number_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS cdk_codes (
@@ -167,7 +174,8 @@ CREATE TABLE IF NOT EXISTS billing_records (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     payment_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '支付时间',
     card_last4 VARCHAR(4) NOT NULL COMMENT '卡片后四位',
-    card_number VARCHAR(32) NULL COMMENT '完整卡号',
+    card_number VARCHAR(32) NULL COMMENT '旧版明文字段，已迁移后置空',
+    card_number_enc TEXT NULL COMMENT 'AES-256-GCM 加密卡号',
     amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '支付金额',
     currency VARCHAR(8) NOT NULL DEFAULT 'USD' COMMENT '币种',
     plan_type VARCHAR(16) NOT NULL DEFAULT 'plus' COMMENT 'plus/pro_5x/pro_20x',

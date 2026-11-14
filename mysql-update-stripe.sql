@@ -5,6 +5,12 @@
 -- 1. card_assets 扩展字段：持卡人姓名、使用追踪、冷却机制
 ALTER TABLE card_assets
     ADD COLUMN IF NOT EXISTS card_holder VARCHAR(128) NOT NULL DEFAULT '' COMMENT '持卡人姓名' AFTER card_cvc,
+    ADD COLUMN IF NOT EXISTS card_number_enc TEXT NULL COMMENT 'AES-256-GCM 加密卡号' AFTER card_holder,
+    ADD COLUMN IF NOT EXISTS card_expiry_enc TEXT NULL COMMENT 'AES-256-GCM 加密有效期' AFTER card_number_enc,
+    ADD COLUMN IF NOT EXISTS card_cvc_enc TEXT NULL COMMENT 'AES-256-GCM 加密 CVC' AFTER card_expiry_enc,
+    ADD COLUMN IF NOT EXISTS card_holder_enc TEXT NULL COMMENT 'AES-256-GCM 加密持卡人' AFTER card_cvc_enc,
+    ADD COLUMN IF NOT EXISTS card_last4 VARCHAR(4) NULL COMMENT '卡号后四位' AFTER card_holder_enc,
+    ADD COLUMN IF NOT EXISTS card_number_hash CHAR(64) NULL COMMENT '卡号 SHA256，用于去重' AFTER card_last4,
     ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP NULL DEFAULT NULL COMMENT '最后使用时间' AFTER locked_by,
     ADD COLUMN IF NOT EXISTS daily_usage_count INT NOT NULL DEFAULT 0 COMMENT '24h 内使用次数' AFTER last_used_at,
     ADD COLUMN IF NOT EXISTS daily_usage_reset_at TIMESTAMP NULL DEFAULT NULL COMMENT '24h 计数重置时间' AFTER daily_usage_count,
@@ -34,6 +40,7 @@ CREATE TABLE IF NOT EXISTS billing_records (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     payment_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '支付时间',
     card_last4 VARCHAR(4) NOT NULL COMMENT '卡片后四位',
+    card_number_enc TEXT NULL COMMENT 'AES-256-GCM 加密卡号',
     amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '支付金额',
     currency VARCHAR(8) NOT NULL DEFAULT 'USD' COMMENT '币种',
     plan_type VARCHAR(16) NOT NULL DEFAULT 'plus' COMMENT 'plus/pro_5x/pro_20x',

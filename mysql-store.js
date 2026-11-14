@@ -10,6 +10,7 @@ const {
     maskProxyUrl
 } = require('./proxy-pool');
 const { normalizeCaptchaPlatformApiUrl, DEFAULT_API_URL: CAPTCHA_PLATFORM_DEFAULT_URL, resolveCaptchaPlatformCredentials } = require('./captcha-platform');
+const cardCrypto = require('./card-crypto');
 
 const DB_HOST = process.env.DB_HOST || '127.0.0.1';
 const DB_PORT = Number(process.env.DB_PORT || 3306);
@@ -334,6 +335,21 @@ async function ensureColumn(tableName, columnName, columnDefinition) {
     await runQuery(`ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` ${columnDefinition}`);
 }
 
+async function ensureIndex(tableName, indexName, definitionSql) {
+    const rows = await runQuery(
+        `SELECT COUNT(*) AS count
+         FROM information_schema.STATISTICS
+         WHERE TABLE_SCHEMA = ?
+           AND TABLE_NAME = ?
+           AND INDEX_NAME = ?`,
+        [DB_NAME, tableName, indexName]
+    );
+    if (Number(rows[0]?.count || 0) > 0) {
+        return;
+    }
+    await runQuery(`ALTER TABLE \`${tableName}\` ADD ${definitionSql}`);
+}
+
 async function ensureLegacyColumns() {
     await ensureColumn('app_config', 'created_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP');
     await ensureColumn('app_config', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
@@ -369,8 +385,15 @@ async function ensureLegacyColumns() {
     await ensureColumn('card_assets', 'payment_address_state', "VARCHAR(100) NOT NULL DEFAULT '' COMMENT '支付绑定地址-州'");
     await ensureColumn('card_assets', 'payment_address_postal', "VARCHAR(20) NOT NULL DEFAULT '' COMMENT '支付绑定地址-邮编'");
     await ensureColumn('card_assets', 'payment_address_id', 'BIGINT UNSIGNED NULL DEFAULT NULL COMMENT \'关联免税地址模板ID\'');
+    await ensureColumn('card_assets', 'card_number_enc', 'TEXT NULL COMMENT \'AES-256-GCM 加密卡号\'');
+    await ensureColumn('card_assets', 'card_expiry_enc', 'TEXT NULL COMMENT \'AES-256-GCM 加密有效期\'');
+    await ensureColumn('card_assets', 'card_cvc_enc', 'TEXT NULL COMMENT \'AES-256-GCM 加密 CVC\'');
+    await ensureColumn('card_assets', 'card_holder_enc', 'TEXT NULL COMMENT \'AES-256-GCM 加密持卡人\'');
+    await ensureColumn('card_assets', 'card_last4', 'VARCHAR(4) NULL COMMENT \'卡号后四位\'');
+    await ensureColumn('card_assets', 'card_number_hash', 'CHAR(64) NULL COMMENT \'卡号 SHA256，用于去重\'');
     await ensureColumn('card_assets', 'created_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP');
     await ensureColumn('card_assets', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+    await ensureIndex('card_assets', 'idx_card_assets_number_hash', 'KEY idx_card_assets_number_hash (card_number_hash)');
 
     await ensureColumn('cdk_codes', 'is_active', 'TINYINT(1) NOT NULL DEFAULT 1');
     await ensureColumn('cdk_codes', 'shipped_at', 'TIMESTAMP NULL DEFAULT NULL');
@@ -410,6 +433,7 @@ async function ensureLegacyColumns() {
     await ensureColumn('product_assets', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
 
     await ensureColumn('billing_records', 'card_number', 'VARCHAR(32) NULL');
+    await ensureColumn('billing_records', 'card_number_enc', 'TEXT NULL COMMENT \'AES-256-GCM 加密卡号\'');
     await ensureColumn('tax_free_addresses', 'is_bound', 'TINYINT(1) NOT NULL DEFAULT 0 COMMENT \'是否已绑定成功支付\'');
     await ensureColumn('tax_free_addresses', 'bound_card_id', 'BIGINT UNSIGNED NULL DEFAULT NULL COMMENT \'绑定的卡片ID\'');
     await ensureColumn('tax_free_addresses', 'bound_at', 'TIMESTAMP NULL DEFAULT NULL COMMENT \'绑定时间\'');
@@ -489,10 +513,81 @@ async function cleanupStaleLegacyTasks() {
     }
 }
 
+async function migrateCardDataEncryption() {
+    cardCrypto.getKey();
+    const cardRows = await runQuery(
+        `SELECT id, card_number, card_expiry, card_cvc, card_holder,
+                card_number_enc, card_expiry_enc, card_cvc_enc, card_holder_enc
+         FROM card_assets
+         WHERE (card_number IS NOT NULL AND card_number <> '')
+            OR (card_expiry IS NOT NULL AND card_expiry <> '')
+            OR (card_cvc IS NOT NULL AND card_cvc <> '')
+            OR (card_holder IS NOT NULL AND card_holder <> '')
+            OR card_number_enc IS NULL`
+    );
+
+    let migratedCards = 0;
+    for (const row of cardRows) {
+        const decrypted = cardCrypto.decryptCardRow(row);
+        if (!decrypted.number) {
+            continue;
+        }
+        await runExecute(
+            `UPDATE card_assets
+             SET card_number = '',
+                 card_expiry = '',
+                 card_cvc = '',
+                 card_holder = '',
+                 card_number_enc = ?,
+                 card_expiry_enc = ?,
+                 card_cvc_enc = ?,
+                 card_holder_enc = ?,
+                 card_last4 = ?,
+                 card_number_hash = ?
+             WHERE id = ?`,
+            [
+                cardCrypto.encrypt(decrypted.number),
+                cardCrypto.encrypt(decrypted.expiry),
+                cardCrypto.encrypt(decrypted.cvc),
+                cardCrypto.encrypt(decrypted.holder),
+                cardCrypto.getCardLast4(decrypted.number),
+                cardCrypto.hashCardNumber(decrypted.number),
+                Number(row.id)
+            ]
+        );
+        migratedCards += 1;
+    }
+
+    const billingRows = await runQuery(
+        `SELECT id, card_number, card_last4
+         FROM billing_records
+         WHERE card_number IS NOT NULL AND card_number <> ''`
+    );
+
+    let migratedBilling = 0;
+    for (const row of billingRows) {
+        const last4 = String(row.card_last4 || '').trim() || cardCrypto.getCardLast4(row.card_number);
+        await runExecute(
+            `UPDATE billing_records
+             SET card_number = NULL,
+                 card_number_enc = ?,
+                 card_last4 = ?
+             WHERE id = ?`,
+            [cardCrypto.encrypt(row.card_number), last4, Number(row.id)]
+        );
+        migratedBilling += 1;
+    }
+
+    if (migratedCards > 0 || migratedBilling > 0) {
+        console.log(`[CardCrypto] 已加密迁移银行卡 ${migratedCards} 条、账单 ${migratedBilling} 条`);
+    }
+}
+
 async function ensureReady() {
     const schemaSql = fs.readFileSync(SCHEMA_PATH, 'utf8');
     await runQuery(schemaSql);
     await ensureLegacyColumns();
+    await migrateCardDataEncryption();
     await ensureGptApiColumns();
     await initializeBaseData();
     await ensureAdminSecurityDefaults();
@@ -848,7 +943,7 @@ async function getAdminData() {
              ORDER BY sort_order ASC, id ASC`
         ),
         runQuery(
-            `SELECT card_number, card_expiry, card_cvc, usage_count, is_active, status
+            `SELECT card_last4, usage_count, is_active, status
              FROM card_assets
              ORDER BY sort_order ASC, id ASC`
         ),
@@ -906,9 +1001,9 @@ async function getAdminData() {
                     : String(row.status || 'invalid').trim() || 'invalid'
             })),
             card_pool: cardRows.map((row) => ({
-                number: row.card_number,
-                expiry: row.card_expiry,
-                cvc: row.card_cvc,
+                number: cardCrypto.maskCardNumber(row.card_last4),
+                expiry: '****',
+                cvc: '***',
                 usage_count: Number(row.usage_count || 0),
                 is_active: Number(row.is_active || 0),
                 status: Number(row.is_active || 0) === 1
@@ -1013,8 +1108,11 @@ async function saveConfig(config = {}) {
     const phonePool = hasOwn('phone_pool')
         ? normalizePhonePool(Array.isArray(config.phone_pool) ? config.phone_pool : [])
         : null;
-    const cardPool = hasOwn('card_pool')
+    const cardPoolRaw = hasOwn('card_pool')
         ? normalizeCardPool(Array.isArray(config.card_pool) ? config.card_pool : [])
+        : null;
+    const cardPool = cardPoolRaw && cardPoolRaw.every((item) => /^\d{13,19}$/.test(String(item[0]).replace(/\s+/g, '')))
+        ? cardPoolRaw
         : null;
 
     await withTransaction(async (connection) => {
@@ -1055,30 +1153,61 @@ async function saveConfig(config = {}) {
 
         if (cardPool !== null) {
             if (cardPool.length > 0) {
-                const cardNumbers = cardPool.map((item) => item[0]);
-                const cardPlaceholders = cardNumbers.map(() => '?').join(', ');
+                const cardHashes = cardPool.map((item) => cardCrypto.hashCardNumber(item[0]));
+                const cardPlaceholders = cardHashes.map(() => '?').join(', ');
                 await runExecute(
                     `DELETE FROM card_assets
-                     WHERE card_number NOT IN (${cardPlaceholders})`,
-                    cardNumbers,
+                     WHERE card_number_hash NOT IN (${cardPlaceholders})`,
+                    cardHashes,
                     { connection }
                 );
                 for (const card of cardPool) {
+                    const encrypted = cardCrypto.buildEncryptedCardFields({
+                        card_number: card[0],
+                        card_expiry: card[1],
+                        card_cvc: card[2]
+                    });
                     const result = await runExecute(
                         `UPDATE card_assets
-                         SET card_expiry = ?,
-                             card_cvc = ?,
+                         SET card_number = '',
+                             card_expiry = '',
+                             card_cvc = '',
+                             card_number_enc = ?,
+                             card_expiry_enc = ?,
+                             card_cvc_enc = ?,
+                             card_last4 = ?,
+                             card_number_hash = ?,
                              sort_order = ?,
                              is_active = ?
-                         WHERE card_number = ?`,
-                        [card[1], card[2], card[3], card[4], card[0]],
+                         WHERE card_number_hash = ?`,
+                        [
+                            encrypted.card_number_enc,
+                            encrypted.card_expiry_enc,
+                            encrypted.card_cvc_enc,
+                            encrypted.card_last4,
+                            encrypted.card_number_hash,
+                            card[3],
+                            card[4],
+                            encrypted.card_number_hash
+                        ],
                         { connection }
                     );
                     if (result.affectedRows === 0) {
                         await runExecute(
-                            `INSERT INTO card_assets (card_number, card_expiry, card_cvc, sort_order, is_active)
-                             VALUES (?, ?, ?, ?, ?)`,
-                            card,
+                            `INSERT INTO card_assets
+                                (card_number, card_expiry, card_cvc, card_holder,
+                                 card_number_enc, card_expiry_enc, card_cvc_enc, card_holder_enc,
+                                 card_last4, card_number_hash, sort_order, is_active)
+                             VALUES ('', '', '', '', ?, ?, ?, '', ?, ?, ?, ?)`,
+                            [
+                                encrypted.card_number_enc,
+                                encrypted.card_expiry_enc,
+                                encrypted.card_cvc_enc,
+                                encrypted.card_last4,
+                                encrypted.card_number_hash,
+                                card[3],
+                                card[4]
+                            ],
                             { connection }
                         );
                     }
@@ -1400,8 +1529,8 @@ async function deleteCardAsset(cardNumber) {
         `UPDATE card_assets
          SET is_active = 0,
              status = '已报废'
-         WHERE card_number = ?`,
-        [String(cardNumber)]
+         WHERE card_number_hash = ?`,
+        [cardCrypto.hashCardNumber(cardNumber)]
     );
 }
 
@@ -1441,7 +1570,14 @@ async function reserveAssetRow(connection, table, columns, ownerKey) {
 async function reserveRuntimeAssets(ownerKey = '') {
     return withTransaction(async (connection) => {
         const [cardRow] = await Promise.all([
-            reserveAssetRow(connection, 'card_assets', ['card_number', 'card_expiry', 'card_cvc', 'card_holder', 'usage_count'], ownerKey)
+            reserveAssetRow(
+                connection,
+                'card_assets',
+                ['card_number', 'card_expiry', 'card_cvc', 'card_holder',
+                    'card_number_enc', 'card_expiry_enc', 'card_cvc_enc', 'card_holder_enc',
+                    'usage_count'],
+                ownerKey
+            )
         ]);
 
         const proxyRows = await connection.query(
@@ -1451,16 +1587,17 @@ async function reserveRuntimeAssets(ownerKey = '') {
             ? substituteProxySession(String(proxyRows[0].proxy_url))
             : '';
 
+        const cardSecrets = cardRow ? cardCrypto.decryptCardRow(cardRow) : null;
         return {
             phoneAssetId: null,
             cardAssetId: cardRow?.id || null,
             phone: { phone: '', key: '', usage_count: 0 },
             card: cardRow
                 ? {
-                    number: cardRow.card_number,
-                    expiry: cardRow.card_expiry,
-                    cvc: cardRow.card_cvc,
-                    holder: cardRow.card_holder || '',
+                    number: cardSecrets.number,
+                    expiry: cardSecrets.expiry,
+                    cvc: cardSecrets.cvc,
+                    holder: cardSecrets.holder || '',
                     usage_count: Number(cardRow.usage_count || 0)
                 }
                 : { number: '', expiry: '', cvc: '', holder: '', usage_count: 0 },
@@ -1930,7 +2067,9 @@ async function getRuntimeAssets() {
              LIMIT 1`
         ),
         runQuery(
-            `SELECT card_number, card_expiry, card_cvc, usage_count
+            `SELECT card_number, card_expiry, card_cvc, card_holder,
+                    card_number_enc, card_expiry_enc, card_cvc_enc, card_holder_enc,
+                    card_last4, usage_count
              FROM card_assets
              WHERE is_active = 1
              ORDER BY usage_count ASC, id ASC
@@ -1941,12 +2080,13 @@ async function getRuntimeAssets() {
 
     const phoneRow = phoneRows[0];
     const cardRow = cardRows[0];
+    const cardSecrets = cardRow ? cardCrypto.decryptCardRow(cardRow) : null;
     return {
         phone: phoneRow
             ? { phone: phoneRow.phone, key: phoneRow.sms_api_key, usage_count: Number(phoneRow.usage_count || 0) }
             : { phone: '未配置', key: '', usage_count: 0 },
         card: cardRow
-            ? { number: cardRow.card_number, expiry: cardRow.card_expiry, cvc: cardRow.card_cvc, usage_count: Number(cardRow.usage_count || 0) }
+            ? { number: cardSecrets.number, expiry: cardSecrets.expiry, cvc: cardSecrets.cvc, usage_count: Number(cardRow.usage_count || 0) }
             : { number: '', expiry: '', cvc: '', usage_count: 0 },
         proxy
     };
@@ -1971,8 +2111,8 @@ async function incrementAssetSuccessCount({ phone, cardNumber }) {
             runExecute(
                 `UPDATE card_assets
                  SET usage_count = usage_count + 1
-                 WHERE card_number = ? AND is_active = 1`,
-                [String(cardNumber)]
+                 WHERE card_number_hash = ? AND is_active = 1`,
+                [cardCrypto.hashCardNumber(cardNumber)]
             )
         );
     }
@@ -2644,6 +2784,60 @@ async function getRunningTaskByCdk(cdk) {
     return rows[0] || null;
 }
 
+/**
+ * 清理服务重启前遗留的 running 任务。
+ * 未进入支付阶段（progress < rollbackBeforeProgress）的任务会同时回滚 CDK；
+ * 已进入支付阶段的任务保留 CDK 已使用状态，避免重复扣款。
+ */
+async function failInterruptedRunningTasks({
+    reason = '服务重启，上一任务已中断，请重新提交',
+    rollbackBeforeProgress = 40,
+    query = runQuery,
+    execute = runExecute
+} = {}) {
+    const rows = await query(
+        `SELECT job_key, cdk_code, progress
+         FROM task_logs
+         WHERE status = 'running'
+         ORDER BY id ASC`
+    );
+    const rolledBackCdks = [];
+
+    for (const row of rows) {
+        const jobKey = String(row.job_key || '');
+        const progress = Number(row.progress || 0);
+        const updateResult = await execute(
+            `UPDATE task_logs
+             SET status = 'failed',
+                 message = ?,
+                 raw_output = CONCAT(COALESCE(raw_output, ''), ?)
+             WHERE job_key = ? AND status = 'running'`,
+            [String(reason), `\n${reason}`, jobKey]
+        );
+        if (!updateResult || Number(updateResult.affectedRows || 0) === 0) {
+            continue;
+        }
+
+        const cdk = String(row.cdk_code || '').trim();
+        if (cdk && cdk !== '[checkout-debug]' && progress < Number(rollbackBeforeProgress || 40)) {
+            const rollbackResult = await execute(
+                `UPDATE cdk_codes
+                 SET used_at = NULL
+                 WHERE cdk_code = ? AND is_active = 1 AND used_at IS NOT NULL`,
+                [cdk]
+            );
+            if (rollbackResult && Number(rollbackResult.affectedRows || 0) > 0) {
+                rolledBackCdks.push(cdk);
+            }
+        }
+    }
+
+    return {
+        count: rows.length,
+        rolledBackCdks
+    };
+}
+
 async function deleteTaskLogByJobKey(jobKey) {
     const key = String(jobKey || '').trim();
     if (!key) {
@@ -2985,7 +3179,9 @@ async function hasAvailableCard() {
 async function reserveCard(ownerKey) {
     return withTransaction(async (connection) => {
         const [rows] = await connection.query(
-            `SELECT id, card_number, card_expiry, card_cvc, card_holder, usage_count
+            `SELECT id, card_number, card_expiry, card_cvc, card_holder,
+                    card_number_enc, card_expiry_enc, card_cvc_enc, card_holder_enc,
+                    card_last4, usage_count
              FROM card_assets
              WHERE is_active = 1
                AND in_use = 0
@@ -3010,12 +3206,13 @@ async function reserveCard(ownerKey) {
             [String(ownerKey || '').slice(0, 64) || null, row.id]
         );
 
+        const secrets = cardCrypto.decryptCardRow(row);
         return {
             id: row.id,
-            card_number: row.card_number,
-            card_expiry: row.card_expiry,
-            card_cvc: row.card_cvc,
-            card_holder: row.card_holder,
+            card_number: secrets.number,
+            card_expiry: secrets.expiry,
+            card_cvc: secrets.cvc,
+            card_holder: secrets.holder,
             usage_count: Number(row.usage_count || 0)
         };
     });
@@ -3219,23 +3416,24 @@ async function importCards(cards) {
         };
     }
 
-    // Step 2: Check for duplicates in database
-    const cardNumbers = validCards.map((c) => c.card_number);
-    const placeholders = cardNumbers.map(() => '?').join(', ');
+    // Step 2: Check for duplicates in database（按卡号哈希去重，不再查询明文卡号）
+    const cardHashes = validCards.map((c) => cardCrypto.hashCardNumber(c.card_number));
+    const placeholders = cardHashes.map(() => '?').join(', ');
     const existingRows = await runQuery(
-        `SELECT card_number FROM card_assets WHERE card_number IN (${placeholders})`,
-        cardNumbers
+        `SELECT card_number_hash FROM card_assets WHERE card_number_hash IN (${placeholders})`,
+        cardHashes
     );
-    const existingSet = new Set(existingRows.map((r) => r.card_number));
+    const existingSet = new Set(existingRows.map((r) => r.card_number_hash));
 
     const toInsert = [];
     let skipped = 0;
 
     for (const card of validCards) {
-        if (existingSet.has(card.card_number)) {
+        const cardHash = cardCrypto.hashCardNumber(card.card_number);
+        if (existingSet.has(cardHash)) {
             skipped++;
         } else {
-            toInsert.push(card);
+            toInsert.push({ ...card, cardHash });
         }
     }
 
@@ -3244,17 +3442,28 @@ async function importCards(cards) {
     const seenInBatch = new Set();
 
     for (const card of toInsert) {
-        if (seenInBatch.has(card.card_number)) {
+        if (seenInBatch.has(card.cardHash)) {
             skipped++;
             continue;
         }
-        seenInBatch.add(card.card_number);
+        seenInBatch.add(card.cardHash);
 
         try {
+            const encrypted = cardCrypto.buildEncryptedCardFields(card);
             await runExecute(
-                `INSERT INTO card_assets (card_number, card_expiry, card_cvc, card_holder, sort_order, is_active, status)
-                 VALUES (?, ?, ?, ?, 0, 1, '正常')`,
-                [card.card_number, card.card_expiry, card.card_cvc, card.card_holder]
+                `INSERT INTO card_assets
+                    (card_number, card_expiry, card_cvc, card_holder,
+                     card_number_enc, card_expiry_enc, card_cvc_enc, card_holder_enc,
+                     card_last4, card_number_hash, sort_order, is_active, status)
+                 VALUES ('', '', '', '', ?, ?, ?, ?, ?, ?, 0, 1, '正常')`,
+                [
+                    encrypted.card_number_enc,
+                    encrypted.card_expiry_enc,
+                    encrypted.card_cvc_enc,
+                    encrypted.card_holder_enc,
+                    encrypted.card_last4,
+                    encrypted.card_number_hash
+                ]
             );
             imported++;
         } catch (err) {
@@ -3314,14 +3523,16 @@ async function setPaymentRegion(regionCode) {
  * @returns {Promise<number>} 插入记录的 ID
  */
 async function createBillingRecord(data) {
+    const cardNumber = data.card_number ? String(data.card_number) : '';
+    const last4 = String(data.card_last4 || '') || cardCrypto.getCardLast4(cardNumber);
     const result = await runExecute(
         `INSERT INTO billing_records
-            (payment_time, card_number, card_last4, amount, currency, plan_type, stripe_session_id, cdk_code, email, status, error_code, error_message)
-         VALUES (COALESCE(?, NOW()), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (payment_time, card_number, card_number_enc, card_last4, amount, currency, plan_type, stripe_session_id, cdk_code, email, status, error_code, error_message)
+         VALUES (COALESCE(?, NOW()), NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             data.payment_time || null,
-            data.card_number ? String(data.card_number) : null,
-            String(data.card_last4 || ''),
+            cardCrypto.encrypt(cardNumber),
+            last4,
             Number(data.amount || 0),
             String(data.currency || 'USD'),
             String(data.plan_type || 'plus'),
@@ -3380,7 +3591,7 @@ async function listBillingRecords(filters = {}, page = 1, pageSize = 20) {
     const total = Number(countRows[0]?.total || 0);
 
     const offset = (page - 1) * pageSize;
-    const records = await runQuery(
+    const rows = await runQuery(
         `SELECT id, payment_time, card_number, card_last4, amount, currency, plan_type, stripe_session_id, cdk_code, email, status, error_code, error_message, created_at
          FROM billing_records
          ${whereClause}
@@ -3388,6 +3599,11 @@ async function listBillingRecords(filters = {}, page = 1, pageSize = 20) {
          LIMIT ? OFFSET ?`,
         [...params, pageSize, offset]
     );
+
+    const records = rows.map((row) => ({
+        ...row,
+        card_number: cardCrypto.maskCardNumber(row.card_last4)
+    }));
 
     return { records, total, page, pageSize };
 }
@@ -3434,7 +3650,7 @@ async function exportBillingRecordsCSV(filters = {}) {
     );
 
     const BOM = '\uFEFF';
-    const headers = '支付时间,卡号,卡片后四位,金额,币种,套餐类型,Stripe Session ID,CDK码,邮箱,状态,错误码,错误信息';
+    const headers = '支付时间,卡号(已脱敏),卡片后四位,金额,币种,套餐类型,Stripe Session ID,CDK码,邮箱,状态,错误码,错误信息';
 
     const csvRows = rows.map((row) => {
         const paymentTime = row.payment_time
@@ -3442,7 +3658,7 @@ async function exportBillingRecordsCSV(filters = {}) {
             : '';
         return [
             paymentTime,
-            row.card_number || '',
+            cardCrypto.maskCardNumber(row.card_last4),
             row.card_last4 || '',
             row.amount || '0',
             row.currency || '',
@@ -3595,6 +3811,7 @@ module.exports = {
     getBillingOverviewStats,
     getTaskStatus,
     getRunningTaskByCdk,
+    failInterruptedRunningTasks,
     updateTaskLog,
     listRecentGptApiOrders,
     listProducts,

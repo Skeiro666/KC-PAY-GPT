@@ -1,0 +1,228 @@
+{
+  "baseUrl": "http://127.0.0.1:56850",
+  "generatedAt": "2026-11-09T08:04:31.643Z",
+  "scenarios": [
+    {
+      "name": "front-empty-desktop",
+      "url": "/",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "file": "docs\\ui-audit\\front-empty-desktop.png",
+      "errors": [],
+      "note": "初始状态"
+    },
+    {
+      "name": "front-empty-laptop",
+      "url": "/",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "file": "docs\\ui-audit\\front-empty-laptop.png",
+      "errors": [],
+      "note": "笔记本宽度"
+    },
+    {
+      "name": "front-empty-tablet",
+      "url": "/",
+      "viewport": {
+        "width": 768,
+        "height": 1024
+      },
+      "file": "docs\\ui-audit\\front-empty-tablet.png",
+      "errors": [],
+      "note": "平板宽度"
+    },
+    {
+      "name": "front-empty-mobile",
+      "url": "/",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "file": "docs\\ui-audit\\front-empty-mobile.png",
+      "errors": [],
+      "note": "手机宽度"
+    },
+    {
+      "name": "front-step2-desktop",
+      "url": "/",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "file": "docs\\ui-audit\\front-step2-desktop.png",
+      "errors": [],
+      "note": "卡密校验通过、等待提交 Session"
+    },
+    {
+      "name": "front-error-mobile",
+      "url": "/",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "file": "docs\\ui-audit\\front-error-mobile.png",
+      "errors": [
+        "console: Failed to load resource: the server responded with a status of 403 (Forbidden)"
+      ],
+      "note": "卡密无效错误态（模拟接口返回失败）"
+    },
+    {
+      "name": "front-running-desktop",
+      "url": "/",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "file": "docs\\ui-audit\\front-running-desktop.png",
+      "errors": [],
+      "note": "任务进行中（用现有 setProgress/updateFlowUI 渲染真实状态组件）"
+    },
+    {
+      "name": "front-success-desktop",
+      "url": "/",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "file": "docs\\ui-audit\\front-success-desktop.png",
+      "errors": [],
+      "note": "成功终态"
+    },
+    {
+      "name": "front-query-result-desktop",
+      "url": "/",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "file": "docs\\ui-audit\\front-query-result-desktop.png",
+      "errors": [],
+      "note": "查询状态结果（mock /api/cdk/query）"
+    },
+    {
+      "name": "subscription-empty-desktop",
+      "url": "/subscription",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "file": "docs\\ui-audit\\subscription-empty-desktop.png",
+      "errors": [],
+      "note": ""
+    },
+    {
+      "name": "subscription-result-desktop",
+      "url": "/subscription",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "file": "docs\\ui-audit\\subscription-result-desktop.png",
+      "errors": [],
+      "note": "查询成功结果（mock 接口）"
+    },
+    {
+      "name": "subscription-empty-mobile",
+      "url": "/subscription",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "file": "docs\\ui-audit\\subscription-empty-mobile.png",
+      "errors": [],
+      "note": ""
+    },
+    {
+      "name": "login-desktop",
+      "url": "/admin-login",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "file": "docs\\ui-audit\\login-desktop.png",
+      "errors": [],
+      "note": ""
+    },
+    {
+      "name": "login-mobile",
+      "url": "/admin-login",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "file": "docs\\ui-audit\\login-mobile.png",
+      "errors": [],
+      "note": ""
+    },
+    {
+      "name": "login-2fa-desktop",
+      "url": "/admin-login",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "file": "docs\\ui-audit\\login-2fa-desktop.png",
+      "errors": [],
+      "note": "二次验证步骤（mock 登录返回 requires2fa）"
+    },
+    {
+      "name": "admin-dashboard-desktop",
+      "url": "/admin",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "file": "docs\\ui-audit\\admin-dashboard-desktop.png",
+      "errors": [],
+      "note": "概览中心"
+    },
+    {
+      "name": "admin-dashboard-laptop",
+      "url": "/admin",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "file": "docs\\ui-audit\\admin-dashboard-laptop.png",
+      "errors": [],
+      "note": ""
+    },
+    {
+      "name": "admin-dashboard-mobile",
+      "url": "/admin",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "file": "docs\\ui-audit\\admin-dashboard-mobile.png",
+      "errors": [],
+      "note": ""
+    },
+    {
+      "name": "admin-drawer-mobile",
+      "url": "/admin",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "file": "docs\\ui-audit\\admin-drawer-mobile.png",
+      "errors": [],
+      "note": "移动端抽屉导航展开"
+    },
+    {
+      "name": "admin-tasks-desktop",
+      "url": "/admin",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "file": "docs\\ui-audit\\admin-tasks-desktop.png",
+      "errors": [],
+      "note": "任务管理列表（mock 日志）"
+    }
+  ]
+}

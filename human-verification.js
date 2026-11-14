@@ -31,6 +31,7 @@ const BLOCKING_TEXT_PATTERNS = [
 
 /** @deprecated 仅保留兼容；请用 isBlockingHumanVerificationVisible */
 const CAPTCHA_CHALLENGE_PATTERNS = BLOCKING_TEXT_PATTERNS;
+const PAYMENT_FORM_LOAD_ERROR_PATTERN = /unable to load (?:the )?payment form/i;
 
 function captchaLog(phase, message, level = 'info') {
     const tag = level === 'warn' ? 'WARN' : level === 'error' ? 'ERROR' : 'INFO';
@@ -484,7 +485,40 @@ async function hasVisibleStripeCardInputs(page) {
     return false;
 }
 
+async function isCheckoutPaymentFormLoadError(page) {
+    try {
+        return await page
+            .getByText(PAYMENT_FORM_LOAD_ERROR_PATTERN)
+            .first()
+            .isVisible({ timeout: 600 });
+    } catch (_) {
+        return false;
+    }
+}
+
+async function clickCheckoutPaymentFormRetry(page) {
+    const candidates = [
+        page.getByRole('button', { name: /retry|try again|重试/i }).first(),
+        page.getByText(/^retry$/i).first()
+    ];
+    for (const candidate of candidates) {
+        try {
+            if (await candidate.isVisible({ timeout: 500 })) {
+                await candidate.click({ timeout: 3000 });
+                return true;
+            }
+        } catch (_) {
+            // 尝试下一个 Retry 定位方式
+        }
+    }
+    return false;
+}
+
 async function isCheckoutPaymentReady(page) {
+    if (await isCheckoutPaymentFormLoadError(page)) {
+        return false;
+    }
+
     if (await hasVisibleStripeCardInputs(page)) {
         return true;
     }
@@ -522,6 +556,8 @@ async function isCheckoutPaymentReady(page) {
 
 async function waitForCheckoutPaymentReady(page, timeoutMs = 60000) {
     const deadline = Date.now() + timeoutMs;
+    let formRetryAttempts = 0;
+    let lastFormRetryAt = 0;
     while (Date.now() < deadline) {
         if (await isCheckoutLoginGate(page) || await hasVisibleLoginChrome(page)) {
             return 'login_required';
@@ -529,6 +565,22 @@ async function waitForCheckoutPaymentReady(page, timeoutMs = 60000) {
         const url = page.url() || '';
         if (isHardLoginRedirectUrl(url) && !isCheckoutPageUrl(url)) {
             return 'login_redirect';
+        }
+        if (await isCheckoutPaymentFormLoadError(page)) {
+            if (formRetryAttempts < 3 && Date.now() - lastFormRetryAt >= 5000) {
+                formRetryAttempts += 1;
+                lastFormRetryAt = Date.now();
+                const clicked = await clickCheckoutPaymentFormRetry(page);
+                captchaLog(
+                    'checkout-ready',
+                    `Stripe 支付表单加载失败，${clicked ? `已点击 Retry（${formRetryAttempts}/3）` : '未找到 Retry 按钮'}，等待重新加载...`,
+                    'warn'
+                );
+                await page.waitForTimeout(clicked ? 1500 : 800);
+                continue;
+            }
+            await page.waitForTimeout(800);
+            continue;
         }
         if (await isCheckoutPaymentReady(page)) {
             return true;
@@ -1322,6 +1374,7 @@ module.exports = {
     waitForCheckoutPaymentReady,
     isCloudflareWallPage,
     isCheckoutPaymentReady,
+    isCheckoutPaymentFormLoadError,
     isVerificationCleared,
     isPageBlocked,
     attemptBypassHumanVerification,

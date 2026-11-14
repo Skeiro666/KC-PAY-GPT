@@ -15,6 +15,7 @@ const path = require('path');
 const {
     isHumanVerificationVisible,
     clearHumanVerification,
+    isCheckoutPaymentFormLoadError,
     buildCaptchaRequiredError,
     hasCheckoutCaptchaOverlayText,
     isCheckoutOverlayCaptchaVisible,
@@ -490,10 +491,14 @@ async function completeStripeCardPayment(page, cardInfo, address, options = {}) 
         if (!captchaClear.cleared) {
             const screenshotPath = await saveDebugScreenshot(page, captchaClear.checkoutNotReady ? 'checkout_not_ready' : 'captcha_before_card_fill');
             if (captchaClear.checkoutNotReady) {
+                const formLoadFailed = await isCheckoutPaymentFormLoadError(page);
                 return {
                     success: false,
-                    error: 'Checkout 支付表单未能加载',
-                    screenshot: screenshotPath
+                    error: formLoadFailed
+                        ? 'Stripe 支付表单加载失败（Unable to load payment form）：通常是代理无法加载 Stripe 资源、Checkout 会话失效或 Stripe 临时故障'
+                        : 'Checkout 支付表单未能加载',
+                    screenshot: screenshotPath,
+                    canRetryCard: false
                 };
             }
             return {
@@ -534,6 +539,16 @@ async function completeStripeCardPayment(page, cardInfo, address, options = {}) 
             await page.waitForTimeout(800);
         } else {
             console.log('[Stripe] OpenAI checkout 页面，跳过支付方式选择，直接填卡');
+        }
+
+        if (await isCheckoutPaymentFormLoadError(page)) {
+            const screenshotPath = await saveDebugScreenshot(page, 'payment_form_load_failed');
+            return {
+                success: false,
+                error: 'Stripe 支付表单加载失败（Unable to load payment form）：通常是代理无法加载 Stripe 资源、Checkout 会话失效或 Stripe 临时故障',
+                screenshot: screenshotPath,
+                canRetryCard: false
+            };
         }
 
         console.log('[Stripe] Step 2: 填写信用卡字段（iframe 自动识别）...');
@@ -671,6 +686,11 @@ const PAYMENT_RESULT_POLL_MS = 2000;
 const PAYMENT_SUCCESS_PATTERNS = [
     /redirect_status=succeeded/i,
     /thank you for subscribing/i,
+    /payment (?:was )?successful/i,
+    /payment complete/i,
+    /subscription (?:has been )?confirmed/i,
+    /your subscription is (?:now )?active/i,
+    /you(?:'re| are) now subscribed/i,
     /subscription is active/i,
     /subscription active/i,
     /you.?re all set/i,
@@ -769,6 +789,30 @@ async function dismissCheckoutPaymentError(page) {
     }
 }
 
+async function withTimeout(task, timeoutMs, fallback = null) {
+    let timer = null;
+    try {
+        return await Promise.race([
+            Promise.resolve().then(task),
+            new Promise((resolve) => {
+                timer = setTimeout(() => resolve(fallback), timeoutMs);
+            })
+        ]);
+    } catch (_) {
+        return fallback;
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
+function isPaymentSuccessUrl(url) {
+    const current = String(url || '');
+    if (/redirect_status=succeeded/i.test(current)) {
+        return true;
+    }
+    return /chatgpt\.com/i.test(current) && !/\/checkout\//i.test(current);
+}
+
 /**
  * 提交后并行等待：hCaptcha 弹层 vs 直接拒付（避免无验证拒付时空等 45s）
  */
@@ -783,7 +827,17 @@ async function handlePostSubmitPhase(page) {
     console.log(`[Stripe] Step 9.5: 并行等待 hCaptcha 弹层或拒付结果（最长 ${Math.round(overlayWaitMs / 1000)}s）...`);
 
     while (Date.now() < deadline) {
-        const declineMsg = await detectPaymentDeclineOnPage(page);
+        // 成功跳转优先判断，避免页面卸载期间 evaluate/textContent 卡住
+        if (isPaymentSuccessUrl(page.url())) {
+            console.log('[Stripe] ✅ 提交后已检测到成功跳转');
+            return { action: 'success' };
+        }
+
+        const declineMsg = await withTimeout(
+            () => detectPaymentDeclineOnPage(page),
+            4000,
+            null
+        );
         if (declineMsg) {
             console.log(`[Stripe] ❌ 提交后快速检测到拒付（未出现验证）: ${declineMsg}`);
             const screenshotPath = await saveDebugScreenshot(page, 'payment_declined');
@@ -794,18 +848,15 @@ async function handlePostSubmitPhase(page) {
             };
         }
 
-        if (await hasAnyCheckoutCaptchaSignal(page)) {
+        const captchaVisible = await withTimeout(
+            () => hasAnyCheckoutCaptchaSignal(page),
+            3000,
+            false
+        );
+        if (captchaVisible) {
             captchaDetected = true;
             console.log('[Stripe] 检测到 hCaptcha 弹层，开始自动处理...');
             break;
-        }
-
-        const url = page.url();
-        if (url.includes('redirect_status=succeeded')) {
-            return { action: 'success' };
-        }
-        if (/chatgpt\.com/i.test(url) && !/\/checkout\//i.test(url)) {
-            return { action: 'success' };
         }
 
         const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
@@ -918,8 +969,17 @@ async function waitForPaymentResult(page, holderName) {
     while (Date.now() < deadline) {
         const url = page.url();
 
-        const captchaBlocking = await hasAnyCheckoutCaptchaSignal(page)
-            || await isHumanVerificationVisible(page);
+        if (isPaymentSuccessUrl(url)) {
+            console.log('[Stripe] ✅ 已检测到支付成功跳转');
+            return buildPaymentSuccessResult(page, holderName);
+        }
+
+        const captchaBlocking = await withTimeout(
+            async () => (await hasAnyCheckoutCaptchaSignal(page))
+                || (await isHumanVerificationVisible(page)),
+            5000,
+            false
+        );
 
         if (captchaBlocking) {
             captchaAttempts += 1;
@@ -946,17 +1006,11 @@ async function waitForPaymentResult(page, holderName) {
             };
         }
 
-        if (url.includes('redirect_status=succeeded')) {
-            console.log('[Stripe] ✅ URL 含 redirect_status=succeeded');
-            return buildPaymentSuccessResult(page, holderName);
-        }
-
-        if (/chatgpt\.com/i.test(url) && !/\/checkout\//i.test(url)) {
-            console.log('[Stripe] ✅ 已离开 checkout 页面');
-            return buildPaymentSuccessResult(page, holderName);
-        }
-
-        const bodyText = String(await page.textContent('body', { timeout: 8000 }).catch(() => '') || '');
+        const bodyText = String(await withTimeout(
+            () => page.textContent('body', { timeout: 5000 }).catch(() => ''),
+            7000,
+            ''
+        ) || '');
 
         for (const re of PAYMENT_DECLINE_PATTERNS) {
             if (re.test(bodyText)) {
@@ -975,19 +1029,23 @@ async function waitForPaymentResult(page, holderName) {
             }
         }
 
-        try {
+        const alertDecline = await withTimeout(async () => {
             const alerts = page.getByRole('alert');
             const alertCount = await alerts.count();
             for (let i = 0; i < alertCount; i += 1) {
                 const alertText = String(await alerts.nth(i).textContent({ timeout: 500 }).catch(() => '') || '');
                 if (!alertText.trim()) continue;
                 if (PAYMENT_DECLINE_PATTERNS.some((re) => re.test(alertText))) {
-                    console.log(`[Stripe] ❌ Alert 拒付: ${alertText.trim()}`);
-                    const screenshotPath = await saveDebugScreenshot(page, 'payment_declined');
-                    return buildDeclinedPaymentResult(page, alertText.trim(), screenshotPath);
+                    return alertText.trim();
                 }
             }
-        } catch (_) { /* no alerts */ }
+            return null;
+        }, 2500, null);
+        if (alertDecline) {
+            console.log(`[Stripe] ❌ Alert 拒付: ${alertDecline}`);
+            const screenshotPath = await saveDebugScreenshot(page, 'payment_declined');
+            return buildDeclinedPaymentResult(page, alertDecline, screenshotPath);
+        }
 
         const now = Date.now();
         if (now - lastProgressLog >= 15000) {
@@ -1012,8 +1070,13 @@ async function waitForPaymentResult(page, holderName) {
     }
 
     const screenshotPath = await saveDebugScreenshot(page, 'payment_result_timeout');
-    if (await hasAnyCheckoutCaptchaSignal(page)
-        || await isHumanVerificationVisible(page)) {
+    const captchaAtTimeout = await withTimeout(
+        async () => (await hasAnyCheckoutCaptchaSignal(page))
+            || (await isHumanVerificationVisible(page)),
+        5000,
+        false
+    );
+    if (captchaAtTimeout) {
         return {
             success: false,
             error: buildCaptchaRequiredError(),
@@ -1561,6 +1624,14 @@ async function fillOpenAiBillingDirect(page, address, fullName, baselineAmount =
         await waitForCheckoutTaxRecalculation(page, { baselineAmount });
     }
 
+    if (!filled.state) {
+        filled.state = await selectBillingState(page, stateFullName, address.state);
+        if (filled.state) {
+            await blurActiveBillingField(page);
+            await waitForCheckoutTaxRecalculation(page, { baselineAmount });
+        }
+    }
+
     filled.line1 = await fillBillingLine1Strict(page, address.line1);
     if (!filled.line1) {
         filled.line1 = await fillFirstVisibleSelector(
@@ -1799,28 +1870,77 @@ async function selectBillingCountry(page, optionLabels) {
     return selectBillingComboboxItem(page, { el: field }, optionLabels, '国家');
 }
 
+async function readBillingStateValue(page) {
+    for (const sel of OPENAI_BILLING_FIELD_SELECTORS.state) {
+        try {
+            const el = page.locator(sel).first();
+            if ((await el.count()) === 0) continue;
+            const tag = await resolveElementTag(el);
+            let value = '';
+            if (tag === 'select') {
+                value = await el.evaluate((node) => {
+                    const opt = node.options?.[node.selectedIndex];
+                    return opt ? String(opt.textContent || opt.value || '').trim() : '';
+                }).catch(() => '');
+            } else {
+                value = String(await el.inputValue({ timeout: 500 }).catch(() => '')).trim();
+            }
+            if (value && !/^(state|province|州|省)$/i.test(value)) {
+                return value;
+            }
+        } catch (_) { /* next selector */ }
+    }
+    return '';
+}
+
 async function selectBillingState(page, stateFullName, stateRaw) {
     console.log('  [Stripe] 选择州...');
-    const options = [stateFullName, stateRaw].filter(Boolean);
-    const ok = await selectFirstVisibleSelect(
-        page,
-        OPENAI_BILLING_FIELD_SELECTORS.state,
-        options,
-        '州/省'
-    );
-    if (ok) return true;
+    const options = [...new Set([stateFullName, stateRaw, stateRaw?.toUpperCase?.()].filter(Boolean))];
+    const deadline = Date.now() + 12000;
 
-    const patterns = [/^state$/i, /^province$/i, /^州$/i, /^省$/i, /address-level1/i];
-    let field = await findBillingControl(page, patterns, 'combobox');
-    if (!field) {
-        field = await findBillingControl(page, patterns, 'textbox');
-    }
-    if (!field) {
-        console.log('  [Stripe] ⚠️ 州字段未找到');
-        return false;
+    while (Date.now() < deadline) {
+        const ok = await selectFirstVisibleSelect(
+            page,
+            OPENAI_BILLING_FIELD_SELECTORS.state,
+            options,
+            '州/省',
+            Math.min(3500, Math.max(800, deadline - Date.now()))
+        );
+        if (ok) {
+            await page.waitForTimeout(500);
+            const current = await readBillingStateValue(page);
+            if (current) {
+                console.log(`  [Stripe] ✅ 州已确认: ${current}`);
+                return true;
+            }
+            console.log('  [Stripe] ✅ 州已选择（控件值不可读，交由税额校验确认）');
+            return true;
+        }
+
+        const patterns = [/^state$/i, /^province$/i, /^州$/i, /^省$/i, /address-level1/i];
+        let field = await findBillingControl(page, patterns, 'combobox');
+        if (!field) {
+            field = await findBillingControl(page, patterns, 'textbox');
+        }
+        if (field) {
+            const fallbackOk = await selectBillingComboboxItem(page, { el: field }, options, '州');
+            if (fallbackOk) {
+                await page.waitForTimeout(500);
+                const current = await readBillingStateValue(page);
+                if (current) {
+                    console.log(`  [Stripe] ✅ 州已确认: ${current}`);
+                    return true;
+                }
+                console.log('  [Stripe] ✅ 州已选择（控件值不可读，交由税额校验确认）');
+                return true;
+            }
+        }
+
+        await page.waitForTimeout(600);
     }
 
-    return selectBillingComboboxItem(page, { el: field }, options, '州');
+    console.warn('  [Stripe] ⚠️ 州字段未选中，请检查美国州下拉是否已加载');
+    return false;
 }
 
 async function locateOpenAiBillingHeading(page) {
@@ -2016,6 +2136,13 @@ async function fillOpenAiCheckoutBilling(page, address, fullName) {
 
     if (missing.length > 0) {
         console.warn(`  [Stripe] ⚠️ 账单字段未全部填写: ${missing.join(', ')}`);
+        if (missing.includes('state')) {
+            return {
+                ok: false,
+                error: '美国账单州未选中，无法计算免税金额',
+                filled
+            };
+        }
         const stillError = await hasBillingValidationError(page);
         if (stillError || missing.includes('line1')) {
             return {

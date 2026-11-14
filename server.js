@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const { spawn, execFileSync } = require('child_process');
 const path = require('path');
@@ -19,9 +20,12 @@ const { buildHcaptchaEnvFromConfig } = require('./hcaptcha-runtime');
 const { checkHcaptchaSolverHealth, testVlmConnectivity, listSolverLogFiles, readSolverLogTail } = require('./hcaptcha-solver');
 const { testCaptchaPlatformConnectivity, normalizeCaptchaPlatformApiUrl, resolveCaptchaPlatformCredentials } = require('./captcha-platform');
 const browserPool = require('./browser-pool');
-const { buildWorkerRuntimeEnv } = require('./browser-runtime');
+const { buildWorkerRuntimeEnv, isBitBrowserProvider } = require('./browser-runtime');
+const { closeBitBrowserProfile } = require('./bitbrowser-client');
 const { querySubscriptionBySession, validateSessionTokenForQuery, cancelAutoRenew, resumeAutoRenew } = require('./subscription-check');
 const gptApi = require('./gpt-api-client');
+const cardCrypto = require('./card-crypto');
+const { redactSensitiveText } = require('./redaction');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -35,6 +39,15 @@ const ACCESS_DEACTIVATED_MESSAGES_URL = '';
 const ACCESS_DEACTIVATED_SYNC_KEY = '';
 const ACCESS_DEACTIVATED_SYNC_COOLDOWN_MS = 30 * 1000;
 const ADMIN_TOKEN_SECRET = process.env.ADMIN_TOKEN_SECRET || adminAuth.resolveAdminTokenSecret();
+
+process.on('unhandledRejection', (reason) => {
+    const message = redactSensitiveText(reason instanceof Error ? reason.stack || reason.message : String(reason || ''));
+    if (/Target page, context or browser has been closed|cdpSession\.send/i.test(message)) {
+        console.warn('[Server] 已忽略浏览器关闭后的异步回调错误');
+        return;
+    }
+    console.error('[Server] unhandledRejection:', message);
+});
 
 // 追踪活跃的子进程，防止产生僵尸进程
 const activeProcesses = new Set();
@@ -53,8 +66,10 @@ function cleanupProcesses() {
 
 // WebSocket 客户端映射: jobKey -> Set<WebSocket>
 const taskClients = new Map();
-const TERMINAL_TASK_STATUSES = new Set(['success', 'failed', 'maintenance']);
+const TERMINAL_TASK_STATUSES = new Set(['success', 'failed', 'manual', 'maintenance']);
 const activeForegroundJobs = new Set();
+let bitBrowserQueue = Promise.resolve();
+const pendingActivationCdks = new Set();
 
 let systemMetricsCache = {
     ts: 0,
@@ -68,6 +83,34 @@ function reserveForegroundSlot(slotKey) {
 
 function releaseForegroundSlot(slotKey) {
     activeForegroundJobs.delete(String(slotKey));
+}
+
+async function recoverInterruptedTask(runningTask, cdk, reason) {
+    const jobKey = String(runningTask?.job_key || '');
+    const progress = Number(runningTask?.progress || 0);
+    const safeToRollback = progress < 40;
+    if (!jobKey) return { safeToRollback, progress };
+
+    await store.updateTaskLog(jobKey, {
+        status: 'failed',
+        message: reason,
+        cdkCode: cdk,
+        progress
+    });
+    if (safeToRollback) {
+        await store.markCdkUnused(cdk).catch(() => { });
+    }
+    releaseForegroundSlot(jobKey);
+    broadcastToTask(jobKey, {
+        type: 'status',
+        jobKey,
+        status: 'failed',
+        message: reason,
+        cdkCode: cdk,
+        progress
+    });
+    logTask(jobKey, reason, 'warn');
+    return { safeToRollback, progress };
 }
 
 function getTotalActiveJobs() {
@@ -263,14 +306,15 @@ async function sendTaskSnapshot(ws, jobKey) {
 }
 
 function logTask(jobKey, message, level = 'log') {
+    const safeMessage = redactSensitiveText(message);
     runtimeLog.push({
         jobKey,
         level,
         source: 'task',
-        text: String(message || '')
+        text: String(safeMessage || '')
     });
     const logger = console[level] || console.log;
-    logger(`[Task ${jobKey}] ${message}`);
+    logger(`[Task ${jobKey}] ${safeMessage}`);
 }
 
 function logTaskChunk(jobKey, attempt, source, chunk) {
@@ -285,17 +329,18 @@ function logTaskChunk(jobKey, attempt, source, chunk) {
         if (!line.trim()) {
             continue;
         }
+        const safeLine = redactSensitiveText(line);
         runtimeLog.push({
             jobKey,
-            level: line.includes('CAPTCHA_LOG:') || line.includes('[Captcha/')
+            level: safeLine.includes('CAPTCHA_LOG:') || safeLine.includes('[Captcha/')
                 ? 'captcha'
                 : (source === 'stderr' ? 'stderr' : 'stdout'),
-            source: line.includes('CAPTCHA_LOG:') || line.includes('[Captcha/')
+            source: safeLine.includes('CAPTCHA_LOG:') || safeLine.includes('[Captcha/')
                 ? 'captcha'
                 : `spawn/a${attempt}/${source}`,
-            text: line.replace(/^CAPTCHA_LOG:\s*/, '')
+            text: safeLine.replace(/^CAPTCHA_LOG:\s*/, '')
         });
-        console.log(`[Task ${jobKey}][Attempt ${attempt}][${source}] ${line}`);
+        console.log(`[Task ${jobKey}][Attempt ${attempt}][${source}] ${safeLine}`);
     }
 }
 
@@ -834,6 +879,19 @@ function analyzeProcessOutput(output, timedOut) {
         return {
             status: 'failed',
             message: '代理配置错误：Playwright 不支持带账号密码的 SOCKS5，系统已自动中继；若仍失败请检查代理 URL 或改用 HTTP 代理',
+            reachedPayment: false,
+            shouldRetry: false,
+            deletePhone: false,
+            deleteCard: false
+        };
+    }
+
+    if (normalized.includes('住宅代理隧道连接失败')
+        || normalized.includes('HTTP 599')
+        || normalized.includes('代理节点不可达')) {
+        return {
+            status: 'failed',
+            message: '代理节点不可用（HTTP 599）：请到代理后台检查节点、余额或白名单，然后更换可用节点',
             reachedPayment: false,
             shouldRetry: false,
             deletePhone: false,
@@ -1897,6 +1955,7 @@ app.get('/api/admin/data', async (req, res) => {
 app.get('/api/admin/browser-pool', async (req, res) => {
     try {
         await ensureStoreReady();
+        const bitBrowser = isBitBrowserProvider(process.env);
         const modeEnabled = await store.getBrowserPoolEnabled();
         const system = await getSystemMetrics();
         const memText = String(system?.memory?.text || '');
@@ -1909,9 +1968,10 @@ app.get('/api/admin/browser-pool', async (req, res) => {
             success: true,
             pool,
             mode: {
-                enabled: modeEnabled,
-                runtime: browserPool.getRuntimeEnabled(),
-                workerMode: modeEnabled ? 'pool' : 'standalone'
+                provider: bitBrowser ? 'bitbrowser' : 'chromium',
+                enabled: bitBrowser ? false : modeEnabled,
+                runtime: bitBrowser ? false : browserPool.getRuntimeEnabled(),
+                workerMode: bitBrowser ? 'bitbrowser' : (modeEnabled ? 'pool' : 'standalone')
             },
             system,
             foreground: {
@@ -1927,6 +1987,12 @@ app.get('/api/admin/browser-pool', async (req, res) => {
 app.post('/api/admin/browser-pool/mode', async (req, res) => {
     try {
         await ensureStoreReady();
+        if (isBitBrowserProvider(process.env)) {
+            return res.status(400).json({
+                success: false,
+                message: '当前使用比特浏览器模式，请修改 .env 的 BROWSER_PROVIDER 后重启服务'
+            });
+        }
         const enabled = req.body?.enabled === true
             || req.body?.enabled === 1
             || String(req.body?.enabled || '').trim() === '1';
@@ -1952,6 +2018,12 @@ app.post('/api/admin/browser-pool/mode', async (req, res) => {
 app.post('/api/admin/browser-pool/reload', async (req, res) => {
     try {
         await ensureStoreReady();
+        if (isBitBrowserProvider(process.env)) {
+            return res.status(400).json({
+                success: false,
+                message: '比特浏览器模式不使用本地 Chrome 池，无需重载'
+            });
+        }
         const requestedSize = req.body?.size;
         if (requestedSize != null) {
             browserPool.setRuntimePoolSize(requestedSize);
@@ -2682,6 +2754,8 @@ app.get('/api/admin/cards', requireSecondaryAuth, async (req, res) => {
         await ensureStoreReady();
         const rows = await store.runQuery(
             `SELECT id, card_number, card_expiry, card_cvc, card_holder,
+                    card_number_enc, card_expiry_enc, card_cvc_enc, card_holder_enc,
+                    card_last4, card_number_hash,
                     payment_holder_name, payment_address_line1, payment_address_city,
                     payment_address_state, payment_address_postal, payment_address_id,
                     is_active, usage_count, last_used_at, status, cooldown_until
@@ -2690,11 +2764,11 @@ app.get('/api/admin/cards', requireSecondaryAuth, async (req, res) => {
         );
         const cards = rows.map((row) => ({
             id: row.id,
-            card_number: row.card_number || '',
-            card_expiry: row.card_expiry || '',
-            card_cvc: row.card_cvc || '',
-            last4: String(row.card_number || '').slice(-4),
-            card_holder: row.card_holder || '',
+            card_number: cardCrypto.maskCardNumber(row.card_last4),
+            card_expiry: cardCrypto.decrypt(row.card_expiry_enc) || row.card_expiry || '',
+            card_cvc: (row.card_cvc_enc || row.card_cvc) ? '***' : '',
+            last4: row.card_last4 || cardCrypto.getCardLast4(row.card_number || ''),
+            card_holder: cardCrypto.decrypt(row.card_holder_enc) || row.card_holder || '',
             payment_holder_name: row.payment_holder_name || '',
             payment_address_line1: row.payment_address_line1 || '',
             payment_address_city: row.payment_address_city || '',
@@ -3089,6 +3163,10 @@ app.delete('/api/admin/billing/:id', async (req, res) => {
 
 
 async function syncBrowserPoolModeFromStore() {
+    if (isBitBrowserProvider(process.env)) {
+        await browserPool.shutdownBrowserPool().catch(() => {});
+        return { enabled: false, initialized: false, size: 0, mode: 'bitbrowser' };
+    }
     const enabled = await store.getBrowserPoolEnabled();
     browserPool.setRuntimeEnabled(enabled);
     if (!enabled) {
@@ -3099,7 +3177,23 @@ async function syncBrowserPoolModeFromStore() {
     return { ...info, mode: 'pool' };
 }
 
+function withBitBrowserLock(fn) {
+    const next = bitBrowserQueue.catch(() => {}).then(fn);
+    bitBrowserQueue = next.catch(() => {});
+    return next;
+}
+
 async function spawnWorkerWithBrowser({ jobKey, runtimeEnv, runScript }) {
+    if (isBitBrowserProvider(process.env)) {
+        logTask(jobKey, '浏览器模式: 比特浏览器（单环境串行）');
+        return withBitBrowserLock(async () => {
+            try {
+                return await runScript(buildWorkerRuntimeEnv(runtimeEnv, null, 'bitbrowser'));
+            } finally {
+                await closeBitBrowserProfile().catch(() => {});
+            }
+        });
+    }
     const poolEnabled = browserPool.getRuntimeEnabled();
     if (!poolEnabled) {
         logTask(jobKey, '浏览器模式: 独立启动（后台已关闭浏览器池）');
@@ -3127,7 +3221,7 @@ function spawnCheckoutDebugWorker({ task, token, sessionRaw, planType, region, p
                 ...process.env,
                 ...hcaptchaEnv,
                 CHECKOUT_DEBUG_ONLY: '1',
-                CHECKOUT_MODE: 'api',
+                CHECKOUT_MODE: String(process.env.CHECKOUT_MODE || 'ui').toLowerCase(),
                 CHATGPT_TOKEN: token,
                 CHATGPT_SESSION_JSON: String(sessionRaw || '').startsWith('{') ? sessionRaw : '',
                 CDK_PLAN_TYPE: planType,
@@ -3473,6 +3567,8 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
 
                 logTask(task.jobKey, `尝试 ${attempt} 启动自动化 proxy=${proxy ? 'yes' : 'no'}`);
 
+                // Once a worker starts, an exception alone cannot prove no payment occurred.
+                shouldRollbackCdk = false;
                 const run = await spawnWorkerWithBrowser({
                     jobKey: task.jobKey,
                     runtimeEnv,
@@ -3509,6 +3605,7 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
                     })
                 });
 
+                shouldRollbackCdk = run.analysis.status !== 'success' && run.analysis.status !== 'manual';
                 const cardLast4 = extractCardLast4FromOutput(run.output);
                 allOutputs.push(`===== ATTEMPT ${attempt}${cardLast4 ? ` | CARD ${cardLast4}` : ''} =====\n${run.output}`);
                 finalRun = { ...run, output: allOutputs.join('\n\n') };
@@ -3551,6 +3648,7 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
                 ? { ...finalRun.analysis, status: 'failed', message: String(finalRun.analysis.message || '激活失败').replace('，准备重试', '') }
                 : finalRun?.analysis;
             const finalStatus = normalizedAnalysis?.status || 'failed';
+            shouldRollbackCdk = finalStatus !== 'success' && finalStatus !== 'manual';
 
             const finalProgress = normalizeTaskProgress(finalStatus === 'success' ? 100 : lastProgress, finalStatus, lastProgress);
             const taskMedia = extractTaskMediaFromOutput(rawOutput);
@@ -3611,7 +3709,7 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
                 });
             }
 
-            if (finalStatus !== 'success') {
+            if (shouldRollbackCdk) {
                 await store.markCdkUnused(cdk);
                 logTask(task.jobKey, `CDK ${cdk} 已回滚为未使用`);
             }
@@ -3653,9 +3751,11 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
         } catch (bgError) {
             console.error(`[Background Task Error] ${task.jobKey}:`, bgError);
             logTask(task.jobKey, `后台任务异常: ${bgError.message}`, 'error');
+            const errorStatus = shouldRollbackCdk ? 'failed' : 'manual';
+            const errorMessage = shouldRollbackCdk ? bgError.message : '任务中断，支付结果待核对，CDK 已保留锁定：' + bgError.message;
             await store.updateTaskLog(task.jobKey, {
-                status: 'failed',
-                message: bgError.message,
+                status: errorStatus,
+                message: errorMessage,
                 rawOutput: bgError.message,
                 cdkCode: cdk,
                 progress: normalizeTaskProgress(lastProgress, 'failed', lastProgress)
@@ -3663,8 +3763,8 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
             broadcastToTask(task.jobKey, {
                 type: 'status',
                 jobKey: task.jobKey,
-                status: 'failed',
-                message: bgError.message,
+                status: errorStatus,
+                message: errorMessage,
                 cdkCode: cdk,
                 progress: normalizeTaskProgress(lastProgress, 'failed', lastProgress)
             });
@@ -3709,6 +3809,14 @@ async function handleActivationRequest(req, res) {
         return res.status(400).json({ success: false, message: tokenCheck.message });
     }
 
+    if (pendingActivationCdks.has(cdk)) {
+        return res.status(409).json({ success: false, message: '该 CDK 正在提交中，请稍后查询任务状态' });
+    }
+    pendingActivationCdks.add(cdk);
+    const admissionKey = Symbol('activation-admission');
+    let ownsCdkLock = false;
+    let dispatched = false;
+    let createdTask = null;
     try {
         await ensureStoreReady();
         const maintenanceModeState = await store.getMaintenanceModeState();
@@ -3720,8 +3828,22 @@ async function handleActivationRequest(req, res) {
             return res.status(429).json({ success: false, message: '当前任务过多，请稍后再试' });
         }
 
-        const cdkDetails = await store.verifyCdkDetails(cdk);
-        const runningTask = cdkDetails ? await store.getRunningTaskByCdk(cdk) : null;
+        activeForegroundJobs.add(admissionKey);
+
+        let cdkDetails = await store.verifyCdkDetails(cdk);
+        let runningTask = cdkDetails ? await store.getRunningTaskByCdk(cdk) : null;
+        if (runningTask && !activeForegroundJobs.has(String(runningTask.job_key))) {
+            const reason = '检测到上次任务进程已退出，已自动终止残留任务';
+            const recovery = await recoverInterruptedTask(runningTask, cdk, reason);
+            if (!recovery.safeToRollback) {
+                return res.status(409).json({
+                    success: false,
+                    message: `检测到上次任务已在支付阶段中断（进度 ${recovery.progress}%）。为避免重复扣款，未自动恢复 CDK，请先核对账单/订阅后手动重置该 CDK`
+                });
+            }
+            cdkDetails = await store.verifyCdkDetails(cdk);
+            runningTask = await store.getRunningTaskByCdk(cdk);
+        }
         if (runningTask) {
             return res.json({
                 success: true,
@@ -3777,6 +3899,7 @@ async function handleActivationRequest(req, res) {
             return res.status(403).json({ success: false, message: 'CDK 不可用或正在被他人使用' });
         }
 
+        ownsCdkLock = true;
         const storedSession = buildStoredSessionPayload(rawSession, sessionJson, token);
         const task = await store.createTaskLog({
             tokenPreview: extractSessionPreview(storedSession),
@@ -3788,8 +3911,10 @@ async function handleActivationRequest(req, res) {
             progress: 3
         });
 
+        createdTask = task;
         logTask(task.jobKey, `任务已创建，CDK=${cdk} mode=${useGptApi ? 'gpt-api' : 'local'}`);
         reserveForegroundSlot(task.jobKey);
+        activeForegroundJobs.delete(admissionKey);
 
         if (useGptApi) {
             runGptApiWorker({ task, token, session: JSON.parse(storedSession), cdk, planType: cdkDetails.plan_type || 'plus' }).catch((error) => {
@@ -3799,14 +3924,24 @@ async function handleActivationRequest(req, res) {
             spawnActivationWorker({ task, token, sessionRaw: storedSession, cdk, cdkDetails, clientIp });
         }
 
+        dispatched = true;
         return res.json({
             success: true,
             jobKey: task.jobKey,
             message: '任务已启动，正在为您开通中...'
         });
     } catch (error) {
-        try { await store.markCdkUnused(cdk); } catch (_) { }
+        if (ownsCdkLock && !dispatched) {
+            if (createdTask) {
+                releaseForegroundSlot(createdTask.jobKey);
+                await store.updateTaskLog(createdTask.jobKey, { status: 'failed', message: '任务启动失败', cdkCode: cdk }).catch(() => {});
+            }
+            try { await store.markCdkUnused(cdk); } catch (_) { }
+        }
         return res.status(500).json({ success: false, message: error.message });
+    } finally {
+        activeForegroundJobs.delete(admissionKey);
+        pendingActivationCdks.delete(cdk);
     }
 }
 
@@ -3823,8 +3958,23 @@ app.post('/api/verify-cdk', async (req, res) => {
 
     try {
         await ensureStoreReady();
-        const cdkData = await store.verifyCdkDetails(cdk);
-        const runningTask = cdkData ? await store.getRunningTaskByCdk(cdk) : null;
+        let cdkData = await store.verifyCdkDetails(cdk);
+        let runningTask = cdkData ? await store.getRunningTaskByCdk(cdk) : null;
+        if (runningTask && !activeForegroundJobs.has(String(runningTask.job_key))) {
+            const recovery = await recoverInterruptedTask(
+                runningTask,
+                cdk,
+                '检测到上次任务进程已退出，已自动终止残留任务'
+            );
+            if (!recovery.safeToRollback) {
+                return res.status(409).json({
+                    success: false,
+                    message: `上次任务已在支付阶段中断（进度 ${recovery.progress}%），请先核对账单/订阅后再处理该 CDK`
+                });
+            }
+            cdkData = await store.verifyCdkDetails(cdk);
+            runningTask = await store.getRunningTaskByCdk(cdk);
+        }
         if (cdkData && runningTask) {
             return res.json({
                 success: true,
@@ -3918,7 +4068,14 @@ async function start() {
 
     try {
         const poolInfo = await syncBrowserPoolModeFromStore();
-        if (poolInfo.enabled && poolInfo.initialized !== false) {
+        if (poolInfo.mode === 'bitbrowser') {
+            runtimeLog.push({
+                jobKey: '',
+                level: 'system',
+                source: 'server',
+                text: '[Browser] 比特浏览器模式（单环境串行）'
+            });
+        } else if (poolInfo.enabled && poolInfo.initialized !== false) {
             runtimeLog.push({
                 jobKey: '',
                 level: 'system',
@@ -3943,6 +4100,20 @@ async function start() {
         console.log('🔓 [资产锁] 启动时已重置所有 in_use 标记');
     } catch (error) {
         console.error(`❌ [资产锁] 启动重置失败: ${error.message}`);
+    }
+
+    try {
+        const recovery = await store.failInterruptedRunningTasks({
+            reason: '服务重启，上一任务已中断，请重新提交'
+        });
+        if (recovery.count > 0) {
+            console.log(`🧹 [任务恢复] 已终止 ${recovery.count} 个遗留 running 任务`);
+        }
+        if (recovery.rolledBackCdks.length > 0) {
+            console.log(`🔁 [任务恢复] 已恢复未进入支付阶段的 CDK: ${recovery.rolledBackCdks.join(', ')}`);
+        }
+    } catch (error) {
+        console.error(`❌ [任务恢复] 启动清理失败: ${error.message}`);
     }
 
     // 每 60 秒兜底回收一次"超过 15 分钟仍未释放"的锁（防进程崩溃）

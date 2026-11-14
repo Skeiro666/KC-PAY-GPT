@@ -344,48 +344,74 @@ function collectCookieSpecs(sessionData, sessionJson) {
     return specs;
 }
 
+function isTransientSessionVerifyError(error) {
+    const message = String(error?.message || error || '');
+    return /net::ERR_|ECONN|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|socket disconnected|TLS connection|proxy|tunnel/i.test(message);
+}
+
 async function verifyRealSessionApi(context) {
-    const probe = await context.newPage();
-    try {
-        const response = await probe.goto(`${CHATGPT_COOKIE_URL}/api/auth/session`, {
-            waitUntil: 'domcontentloaded',
-            timeout: 60000
-        });
-        const status = response?.status() || 0;
-        const headers = response?.headers?.() || {};
-        const headerText = Object.keys(headers).map((k) => `${k}:${headers[k]}`).join('\n').toLowerCase();
-        const bodyText = await probe.evaluate(() => document.body?.innerText || '').catch(() => '');
-        let data = null;
+    const maxAttempts = 3;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        const probe = await context.newPage();
         try {
-            data = JSON.parse(bodyText);
-        } catch (_) {
-            data = null;
-        }
-        if (data?.accessToken || data?.user?.email || data?.user?.id) {
-            return { ok: true, data, status };
-        }
-        const isCloudflareChallenge = headerText.includes('cf-mitigated: challenge')
-            || /just a moment|verify you are human/i.test(bodyText);
-        if (isCloudflareChallenge) {
+            const response = await probe.goto(`${CHATGPT_COOKIE_URL}/api/auth/session`, {
+                waitUntil: 'domcontentloaded',
+                timeout: 60000
+            });
+            const status = response?.status() || 0;
+            const headers = response?.headers?.() || {};
+            const headerText = Object.keys(headers).map((k) => `${k}:${headers[k]}`).join('\n').toLowerCase();
+            const bodyText = await probe.evaluate(() => document.body?.innerText || '').catch(() => '');
+            let data = null;
+            try {
+                data = JSON.parse(bodyText);
+            } catch (_) {
+                data = null;
+            }
+            if (data?.accessToken || data?.user?.email || data?.user?.id) {
+                return { ok: true, data, status };
+            }
+            const isCloudflareChallenge = headerText.includes('cf-mitigated: challenge')
+                || /just a moment|verify you are human/i.test(bodyText);
+            if (isCloudflareChallenge) {
+                return {
+                    ok: false,
+                    status,
+                    challenge: true,
+                    error: `Cloudflare 人机验证拦截（HTTP ${status}，cf-mitigated: challenge）`
+                        + '。当前出口/代理 IP 被 ChatGPT 风控，请更换干净的住宅代理后重试'
+                };
+            }
+            const snippet = String(bodyText || '').replace(/\s+/g, ' ').slice(0, 120);
             return {
                 ok: false,
                 status,
-                challenge: true,
-                error: `Cloudflare 人机验证拦截（HTTP ${status}，cf-mitigated: challenge）`
-                    + '。当前出口/代理 IP 被 ChatGPT 风控，请更换干净的住宅代理后重试'
+                error: `session-token 未被 ChatGPT 接受（/api/auth/session 无用户信息，HTTP ${status}${snippet ? `，响应: ${snippet}` : ''}）`
             };
+        } catch (err) {
+            lastError = err;
+            const transient = isTransientSessionVerifyError(err);
+            if (!transient || attempt >= maxAttempts) {
+                return {
+                    ok: false,
+                    networkError: transient,
+                    error: `无法验证 session Cookie: ${err.message}`
+                };
+            }
+            console.warn(`[Session] Cookie 校验网络失败，${attempt}/${maxAttempts - 1} 次后重试: ${err.message}`);
+        } finally {
+            await probe.close().catch(() => {});
         }
-        const snippet = String(bodyText || '').replace(/\s+/g, ' ').slice(0, 120);
-        return {
-            ok: false,
-            status,
-            error: `session-token 未被 ChatGPT 接受（/api/auth/session 无用户信息，HTTP ${status}${snippet ? `，响应: ${snippet}` : ''}）`
-        };
-    } catch (err) {
-        return { ok: false, error: `无法验证 session Cookie: ${err.message}` };
-    } finally {
-        await probe.close().catch(() => {});
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1200));
     }
+
+    return {
+        ok: false,
+        networkError: true,
+        error: `无法验证 session Cookie: ${lastError?.message || 'unknown error'}`
+    };
 }
 
 function extractAccessTokenFromRaw(raw) {
@@ -532,6 +558,8 @@ async function installChatGptSession(context, sessionRaw) {
             cookieVerified = true;
             const email = apiCheck.data?.user?.email || '';
             console.log(`[Session] Cookie 校验通过${email ? `: ${email}` : ''}`);
+        } else if (apiCheck.networkError) {
+            console.warn(`[Session] Cookie 在线校验网络中断，继续执行代理连通性检查: ${apiCheck.error}`);
         } else if (apiCheck.error && !/cloudflare|challenge|captcha/i.test(apiCheck.error)) {
             throw new Error(
                 `${apiCheck.error}。请确认 Cookie 未过期，并尽量粘贴浏览器全部 chatgpt.com Cookies（cookies[] 或 cookieHeader）`

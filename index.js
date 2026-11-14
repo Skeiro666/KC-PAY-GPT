@@ -1,11 +1,13 @@
 const { executePaymentWithRetry } = require('./payment-retry');
 const { openPricingCheckout } = require('./pricing-checkout');
-const { openApiCheckout } = require('./chatgpt');
+const { openApiCheckout, watchCheckoutBrowserHeaders } = require('./chatgpt');
 const store = require('./mysql-store');
 const { getRegionConfig, getRegionBrowserProfile } = require('./region-config');
 const { installChatGptSession, bootstrapChatGptSession } = require('./session-auth');
 const { connectTaskBrowser, applyCdpEnv, closeTaskBrowser } = require('./browser-runtime');
 const { preparePlaywrightProxy } = require('./playwright-proxy');
+const { redactSensitiveText } = require('./redaction');
+const { cancelAutoRenewWithRetry } = require('./auto-renew');
 const fs = require('fs');
 const path = require('path');
 
@@ -49,8 +51,8 @@ const CONFIG = {
     proxy: process.env.PROXY || ""
 };
 
-// 录像开关（默认开启；设 RECORD_VIDEO=0 可关闭）与输出目录
-const RECORD_VIDEO = String(process.env.RECORD_VIDEO || '1') !== '0';
+// 录像开关（默认关闭；设 RECORD_VIDEO=1 可开启）与输出目录
+const RECORD_VIDEO = String(process.env.RECORD_VIDEO || '0') === '1';
 const VIDEO_DIR = path.join(__dirname, 'debug_screenshots', 'videos');
 const VIDEO_TAG = (process.env.JOB_KEY || process.env.CDK_CODE || `${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) || `${Date.now()}`;
 
@@ -64,7 +66,11 @@ function buildDebugScreenshotPath(prefix) {
 // 关闭 context 后把录像重命名为带任务标识的稳定文件名，并输出路径供 server 解析
 async function finalizeVideo(context, page, options = {}) {
     const deleteOnSuccess = Boolean(options.deleteOnSuccess);
-    if (!RECORD_VIDEO || !context) return null;
+    if (!context) return null;
+    if (!RECORD_VIDEO) {
+        await context.close().catch(() => {});
+        return null;
+    }
     try {
         const pages = (typeof context.pages === 'function' ? context.pages() : []) || [];
         const targetPage = (page && typeof page.video === 'function' && page.video()) ? page : pages.find((p) => p && p.video && p.video());
@@ -173,6 +179,76 @@ async function recoverConnectionClosed(page, fallbackUrl = '') {
     return false;
 }
 
+const PROXY_PROBE_URLS = [
+    'https://api.ipify.org/?format=text',
+    'https://ifconfig.me/ip',
+    'https://www.cloudflare.com/cdn-cgi/trace'
+];
+
+function extractProbeIp(body) {
+    const text = String(body || '');
+    const cfLine = text.split(/\r?\n/).find((line) => /^ip=/.test(line));
+    if (cfLine) {
+        return cfLine.slice(3).trim();
+    }
+    const match = text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
+    return match ? match[0] : text.trim().split(/\s+/)[0];
+}
+
+async function probeProxyEndpoint(context, probeUrl, timeout = 15000) {
+    try {
+        const response = await context.request.get(probeUrl, { timeout });
+        return {
+            url: probeUrl,
+            ok: response.ok(),
+            status: response.status(),
+            body: response.ok() ? await response.text().catch(() => '') : ''
+        };
+    } catch (error) {
+        return { url: probeUrl, ok: false, status: 0, error };
+    }
+}
+
+async function checkProxyConnectivity(context) {
+    console.log('正在检查代理连通性...');
+    const probes = await Promise.all(
+        PROXY_PROBE_URLS.map((probeUrl) => probeProxyEndpoint(context, probeUrl))
+    );
+
+    const good = probes.find((probe) => probe.ok);
+    if (good) {
+        const ip = extractProbeIp(good.body);
+        const ipMasked = String(ip || '').replace(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/, '***.***.$3.$4');
+        console.log(`✅ [系统] 代理连接成功! 代理公网 IP: ${ipMasked || '(未返回)'}`);
+        return;
+    }
+
+    let authError = null;
+    let lastError = null;
+    for (const probe of probes) {
+        if (probe.status === 407) {
+            authError = new Error('住宅代理认证失败（HTTP 407）：请检查代理账号密码或白名单配置');
+        } else if (probe.status === 599) {
+            lastError = new Error('住宅代理隧道连接失败（HTTP 599）：代理节点不可达或无可用出口，请到代理后台检查节点/余额后更换节点');
+        } else if (probe.error) {
+            lastError = probe.error;
+        } else {
+            lastError = new Error(`代理响应异常: HTTP ${probe.status}（${probe.url}）`);
+        }
+    }
+
+    try {
+        const response = await context.request.get('https://chatgpt.com/robots.txt', { timeout: 20000 });
+        if (response.ok()) {
+            console.warn('[Warn] 代理 IP 检测端点不可用，但 ChatGPT 页面可达，继续执行');
+            return;
+        }
+    } catch (_) { /* ignore */ }
+
+    console.log("    [!] 请检查 PROXY 配置是否正确，或者账号余额是否充足。");
+    throw authError || lastError || new Error('代理连接失败');
+}
+
 /**
  * Main Automation logic
  */
@@ -234,7 +310,7 @@ async function run() {
         contextOptions.proxy = proxyConfig;
     }
 
-    // 全程录像，便于回看自动化卡在哪一步（输出到挂载目录，前台可播放）
+    // 可选录像（RECORD_VIDEO=1 时开启），便于回看自动化卡在哪一步
     if (RECORD_VIDEO) {
         contextOptions.recordVideo = {
             dir: VIDEO_DIR,
@@ -460,22 +536,7 @@ async function run() {
     try {
         // --- Phase 0: Proxy Connectivity Check ---
         if (proxyConfig) {
-            console.log('正在检查代理连通性...');
-            try {
-                const probeResponse = await context.request.get("http://api.ipify.org/?format=text", {
-                    timeout: 15000
-                });
-                if (probeResponse.ok()) {
-                    const ip = (await probeResponse.text()).trim();
-                    const ipMasked = String(ip).replace(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/, '***.***.$3.$4');
-                    console.log(`✅ [系统] 代理连接成功! 代理公网 IP: ${ipMasked}`);
-                } else {
-                    throw new Error(`代理响应异常: HTTP ${probeResponse.status()}`);
-                }
-            } catch (proxyError) {
-                console.log("    [!] 请检查 PROXY 配置是否正确，或者账号余额是否充足。");
-                throw proxyError;
-            }
+            await checkProxyConnectivity(context);
         }
 
         // --- Phase 1: Resolve payment parameters ---
@@ -512,6 +573,7 @@ async function run() {
         console.log(`[1] 套餐类型: ${planType}, 地区: ${paymentRegion}, 币种: ${billingCurrency}`);
 
         page = await context.newPage();
+        watchCheckoutBrowserHeaders(page);
         page.on('close', () => {
             console.warn(`⚠️ [系统] 当前页面已关闭，关闭前最后 URL: ${page.url()}`);
         });
@@ -521,10 +583,16 @@ async function run() {
             console.log(`[Info] 账号邮箱: ${loginInfo.email}`);
         }
 
-        // --- Phase 2: API 创建 Checkout（注入账单地区），失败时回退 UI 定价页 ---
+        // --- Phase 2: API 创建 Checkout（注入账单地区）；UI 定价页兜底默认关闭 ---
         const checkoutMode = String(process.env.CHECKOUT_MODE || 'api').toLowerCase();
+        const uiOnly = checkoutMode === 'ui';
+        const uiFallbackEnabled = uiOnly || ['1', 'true', 'yes', 'on'].includes(String(process.env.CHECKOUT_UI_FALLBACK || '').toLowerCase());
+        if (uiOnly) {
+            console.log('[Checkout] UI 模式已启用：跳过 Checkout API，直接打开定价页并点击升级按钮');
+        }
         let checkoutOpened = false;
         let checkoutResult = null;
+        let apiCheckoutError = null;
         const planNameOverride = String(CONFIG.planNameOverride || '').trim() || undefined;
 
         if (checkoutMode !== 'ui') {
@@ -535,32 +603,42 @@ async function run() {
                     country: billingCountry,
                     currency: billingCurrency,
                     planNameOverride,
-                    verifyPage: !debugOnly
+                    verifyPage: !debugOnly,
+                    sessionData: loginInfo.session
                 });
                 checkoutOpened = true;
             } catch (apiError) {
-                console.warn(`[Warn] API Checkout 失败: ${apiError.message}`);
-                if (debugOnly) {
-                    throw apiError;
-                }
-                if (checkoutMode === 'api') {
-                    console.log('[Info] 正在回退到 UI 定价页流程...');
+                apiCheckoutError = apiError;
+                console.warn(`[Warn] API Checkout 失败: ${redactSensitiveText(apiError.message)}`);
+                if (checkoutMode === 'api' && uiFallbackEnabled) {
+                    console.log(debugOnly
+                        ? '[调试] API 创建订单失败，正在回退到 UI 定价页继续获取支付链接...'
+                        : '[Info] 正在回退到 UI 定价页流程...');
                 } else {
                     throw apiError;
                 }
             }
         }
 
-        if (!checkoutOpened) {
-            if (debugOnly) {
-                throw new Error('API Checkout 失败，调试模式不启用 UI 定价页');
+        if (!checkoutOpened && uiFallbackEnabled) {
+            console.log(debugOnly
+                ? '🧭 [调试] 正在通过定价页 UI 点击升级创建 Checkout...'
+                : '🧭 [步骤] 正在打开定价页并选择升级套餐...');
+            let uiCheckoutUrl = '';
+            try {
+                uiCheckoutUrl = await openPricingCheckout(page, {
+                    region: billingCountry,
+                    planType
+                });
+            } catch (uiError) {
+                const apiMessage = apiCheckoutError ? redactSensitiveText(apiCheckoutError.message) : '未执行';
+                const uiMessage = redactSensitiveText(uiError.message);
+                throw new Error(`API 与 UI 创建 Checkout 均失败（API: ${apiMessage}；UI: ${uiMessage}）`);
             }
-            console.log('🧭 [步骤] 正在打开定价页并选择升级套餐...');
-            await openPricingCheckout(page, {
-                region: billingCountry,
-                planType
-            });
-            checkoutResult = { checkoutUrl: page.url() };
+            checkoutResult = { checkoutUrl: uiCheckoutUrl || page.url() };
+        } else if (!checkoutOpened) {
+            const apiMessage = apiCheckoutError ? redactSensitiveText(apiCheckoutError.message) : '未执行 API Checkout';
+            throw new Error(`API 创建 Checkout 失败（UI 兜底已关闭）: ${apiMessage}`);
         }
 
         if (debugOnly) {
@@ -592,6 +670,21 @@ async function run() {
             for (const screenshotPath of paymentResult.screenshots || []) {
                 console.log(`SUCCESS_SCREENSHOT: ${screenshotPath}`);
             }
+            const autoRenewResult = await cancelAutoRenewWithRetry({
+                accessToken: loginInfo.session?.accessToken || CONFIG.chatgptToken,
+                email: loginInfo.email || email || ''
+            });
+            if (autoRenewResult.skipped) {
+                if (autoRenewResult.reason === 'disabled') {
+                    console.log('[续费] 自动取消续费未开启 (AUTO_CANCEL_RENEW=0)');
+                } else if (autoRenewResult.reason === 'missing_access_token') {
+                    console.warn('[续费] 缺少 AccessToken，无法自动取消续费');
+                }
+            } else if (autoRenewResult.ok) {
+                console.log('AUTO_RENEW_CANCEL_OK');
+            } else {
+                console.warn(`AUTO_RENEW_CANCEL_FAILED: ${redactSensitiveText(autoRenewResult.error || 'unknown error')}`);
+            }
         } else {
             const errorMsg = paymentResult.error || '支付失败（未知原因）';
             for (const screenshotPath of paymentResult.screenshots || []) {
@@ -602,7 +695,7 @@ async function run() {
         }
 
     } catch (e) {
-        console.error("❌ [运行时错误]:", e.message);
+        console.error("❌ [运行时错误]:", redactSensitiveText(e.message));
         try {
             const errorShot = await captureDebugScreenshot(context, page, 'error');
             if (errorShot) {
@@ -617,6 +710,7 @@ async function run() {
         console.log("👋 [系统] 流程结束，正在关闭浏览器...");
         // 先关闭 context 以 flush 录像并取回路径，再关浏览器
         await finalizeVideo(context, page, { deleteOnSuccess: paymentSucceeded }).catch(() => { });
+        if (context) await context.close().catch(() => {});
         await closeTaskBrowser(browserSession, browser);
         await proxyCleanup();
     }

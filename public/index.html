@@ -4,53 +4,54 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ChatGPT 订阅自动开通 | KC ChatGPT PLUS</title>
+    <title>卡密兑换 · 自助开通 | KC ChatGPT PLUS</title>
+    <meta name="description" content="提交卡密与 ChatGPT Session，按官方 Checkout 流程自助开通 ChatGPT Plus / Pro 订阅。">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <meta name="theme-color" content="#faf9f7">
+    <script>
+        /* 预绘制应用主题，避免暗色模式闪白 */
+        (function () {
+            try {
+                var t = localStorage.getItem('kc.theme');
+                var dark = t === 'dark' || (t !== 'light' &&
+                    window.matchMedia('(prefers-color-scheme: dark)').matches);
+                document.documentElement.classList.toggle('dark', dark);
+                var c = localStorage.getItem('kc.color');
+                if (c && c !== 'coral') document.documentElement.setAttribute('data-color', c);
+            } catch (e) { }
+        })();
+    </script>
+    <link rel="stylesheet" href="css/tokens.css">
     <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="js/theme.js" defer></script>
 </head>
 
 <body class="recharge-page">
-    <div class="page-shell">
-        <header class="site-hero">
-            <div class="hero-eyebrow">Instant AI Top-Ups</div>
-            <h1>ChatGPT 订阅自动开通</h1>
-            <p class="hero-subtitle">通过官方 Checkout 流程自助开通 KC ChatGPT PLUS，兑换卡密后粘贴 Session 即可自动完成支付开通。</p>
-            <div class="feature-badges">
-                <span class="feature-badge"><i data-lucide="shield-check"></i> 官方结账</span>
-                <span class="feature-badge"><i data-lucide="zap"></i> 极速开通</span>
-                <span class="feature-badge"><i data-lucide="rotate-ccw"></i> 失败可回滚</span>
-                <a href="/subscription" class="feature-badge feature-link"><i data-lucide="receipt"></i> 发票助手</a>
-            </div>
-        </header>
+    <div class="page-backdrop" aria-hidden="true"></div>
 
-        <section class="plan-showcase">
-            <article class="plan-card">
-                <div class="plan-card-head">
-                    <h3>ChatGPT Plus</h3>
-                    <span class="plan-tag">标准版</span>
-                </div>
-                <p>适合日常使用：GPT-5.5、高级数据分析、DALL·E 等 Plus 权益，按月订阅。</p>
-            </article>
-            <article class="plan-card highlight">
-                <div class="plan-card-head">
-                    <h3>Pro 5x</h3>
-                    <span class="plan-tag pro">高用量</span>
-                </div>
-                <p>在 Pro 基础上提供约 <strong>5 倍</strong> 的消息/推理额度，适合重度个人用户与创作者。</p>
-            </article>
-            <article class="plan-card">
-                <div class="plan-card-head">
-                    <h3>Pro 20x</h3>
-                    <span class="plan-tag pro">旗舰</span>
-                </div>
-                <p>最高约 <strong>20 倍</strong> Pro 用量上限，适合团队主力账号、开发测试与高并发场景。</p>
-            </article>
+    <header class="site-nav">
+        <a class="nav-brand" href="/">
+            <span class="brand-mark" aria-hidden="true">KC</span>
+            <span class="nav-brand-text">KC ChatGPT Plus</span>
+        </a>
+        <nav class="nav-links" aria-label="主导航">
+            <a class="nav-link is-active" href="#redeem">卡密兑换</a>
+            <a class="nav-link" href="/subscription">订阅查询</a>
+        </nav>
+    </header>
+
+    <main class="page-shell">
+        <section class="hero">
+            <p class="eyebrow">KC ChatGPT Plus</p>
+            <h1>卡密兑换，自助开通</h1>
+            <p class="hero-lead">
+                提交卡密与 ChatGPT Session 后，系统按官方 Checkout 流程创建订单并完成订阅开通。
+                一个卡密对应一次开通，卡密状态与任务进度都可以随时查询。
+            </p>
         </section>
-        <p id="paymentRegionHint" class="region-hint">当前账单地区：菲律宾，结算币种：PHP</p>
 
-        <main class="recharge-card">
+        <div class="redeem-layout">
+            <section class="card recharge-card" id="redeem">
             <div class="card-head">
                 <div>
                     <h2>卡密兑换</h2>
@@ -72,20 +73,29 @@
             </div>
 
             <div class="notice-banner">
-                <i data-lucide="info"></i>
-                <p>ChatGPT Plus 自助开通：提交后系统将自动打开官方 Checkout 页面并完成订阅开通，无需提供账号密码。一卡一充，3-5分钟开通完毕，如遇到卡住，请联系客服进行处理。</p>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                    aria-hidden="true">
+                    <circle cx="12" cy="12" r="9"></circle>
+                    <path d="M12 8h.01M11 12h1v4h1"></path>
+                </svg>
+                <p>
+                    提交后系统会创建官方 Checkout 订单并完成订阅支付，不需要提供账号密码。
+                    一个卡密对应一次开通；若任务在进入支付阶段之前中断，卡密会自动回滚，
+                    已进入支付阶段的任务需要人工核对，避免重复扣款。
+                </p>
             </div>
 
-            <nav class="tab-nav">
+            <nav class="tab-nav" aria-label="兑换或查询">
                 <button class="tab-btn active" data-tab="redeem">兑换开通</button>
                 <button class="tab-btn" data-tab="query">查询状态</button>
             </nav>
 
             <div id="redeemSection">
                 <div id="step1">
-                    <label class="field-label" for="cdkInput">输入您的 Plus 充值码</label>
+                    <label class="field-label" for="cdkInput">输入您的充值卡密</label>
                     <section class="input-group">
-                        <input type="text" id="cdkInput" placeholder="请输入卡密 / CDK" maxlength="32">
+                        <input type="text" id="cdkInput" placeholder="请输入卡密 / CDK" maxlength="32"
+                            autocomplete="off" spellcheck="false">
                         <button id="redeemBtn" class="btn-primary"><span class="btn-text">兑换卡密</span>
                             <div class="loader"></div>
                         </button>
@@ -98,14 +108,20 @@
                     <label class="field-label" for="tokenInput">粘贴完整 Session JSON</label>
                     <section class="input-group">
                         <div class="textarea-wrapper">
-                            <a href="https://chatgpt.com/api/auth/session" target="_blank"
+                            <a href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener noreferrer"
                                 class="get-token-btn-floating">获取 Session</a>
-                            <textarea id="tokenInput" placeholder="打开上方链接，全选复制完整 JSON 粘贴到此处（保留 user、expires、accessToken 等全部字段）" rows="5"></textarea>
+                            <textarea id="tokenInput"
+                                placeholder="打开上方链接，全选复制完整 JSON 粘贴到此处（保留 user、expires、accessToken 等全部字段）"
+                                rows="5" autocomplete="off" spellcheck="false"></textarea>
                         </div>
-                        <button id="startBtn" class="btn-primary btn-lg"><span class="btn-text">确认并启动自动化开通</span>
+                        <button id="startBtn" class="btn-primary btn-lg"><span class="btn-text">确认开通</span>
                             <div class="loader"></div>
                         </button>
-                        <p class="field-hint">必须点击「确认并启动」才会执行自动化；仅粘贴不会自动运行。</p>
+                        <p class="field-hint">
+                            Session 是敏感登录凭据：本页不会把它写入本地存储、URL 或日志，也不会因为粘贴而自动提交。
+                            只有点击「确认开通」才会创建任务。
+                        </p>
+                        <p id="connState" class="field-hint" hidden></p>
                         <button id="backToStep1" class="btn-secondary">返回重新输入卡密</button>
                     </section>
                 </div>
@@ -131,27 +147,65 @@
                 </div>
                 <p id="taskProgressText" class="task-progress-text"></p>
             </div>
-            <div id="statusMessage" class="status-message"></div>
-        </main>
+            <div id="statusMessage" class="status-message" role="status" aria-live="polite"></div>
+            </section>
 
-        <details class="faq-panel">
-            <summary>常见问题 / 安全说明</summary>
-            <ul>
-                <li>Session 仅用于本次官方结账，不会保存您的账号密码。</li>
-                <li>开通失败时卡密会自动回滚，可更换账号或稍后重试。</li>
-                <li>若长时间停留在「开通中」，可在「查询状态」查看进度。</li>
-            </ul>
-        </details>
+            <aside class="side-column" aria-label="说明与运行状态">
+                <section id="publicRuntimeCard" class="card is-panel side-card public-runtime-panel load-low">
+                    <h2 class="section-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+                            stroke-linecap="round" aria-hidden="true">
+                            <path d="M4 17V9M10 17V5M16 17v-6M22 17h-20"></path>
+                        </svg>
+                        运行状态
+                    </h2>
+                    <div class="public-runtime-layout">
+                        <div class="public-runtime-value"><span id="publicForegroundSlots">0/0</span></div>
+                        <div id="publicForegroundSlotsMeta" class="public-runtime-meta">当前空闲</div>
+                        <div id="publicForegroundSlotGrid" class="public-slot-grid"></div>
+                    </div>
+                </section>
 
-        <aside id="publicRuntimeCard" class="public-runtime-panel load-low">
-            <div class="public-runtime-layout">
-                <div class="public-runtime-title">前台并发</div>
-                <div id="publicForegroundSlots" class="public-runtime-value">0/0</div>
-                <div id="publicForegroundSlotsMeta" class="public-runtime-meta">当前空闲</div>
-                <div id="publicForegroundSlotGrid" class="public-slot-grid"></div>
-            </div>
-        </aside>
-    </div>
+                <section class="card is-panel side-card">
+                    <h2 class="section-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+                            stroke-linecap="round" aria-hidden="true">
+                            <path d="M4 7h16M4 12h16M4 17h16"></path>
+                        </svg>
+                        套餐档位
+                    </h2>
+                    <ul class="plan-list">
+                        <li class="plan-item">
+                            <span class="plan-item-name">ChatGPT Plus</span>
+                            <span class="plan-item-note">标准档</span>
+                        </li>
+                        <li class="plan-item">
+                            <span class="plan-item-name">Pro 5x</span>
+                            <span class="plan-item-note">高用量档</span>
+                        </li>
+                        <li class="plan-item">
+                            <span class="plan-item-name">Pro 20x</span>
+                            <span class="plan-item-note">旗舰档</span>
+                        </li>
+                    </ul>
+                    <p class="side-note">
+                        实际档位由卡密决定；验证卡密后，卡片上方会显示服务端返回的套餐名称。
+                        具体权益以 ChatGPT 官方说明为准，本页面不额外承诺套餐内容。
+                    </p>
+                </section>
+
+                <details class="card is-panel side-card faq-panel">
+                    <summary>常见问题 / 安全说明</summary>
+                    <ul>
+                        <li>Session 仅用于本次结账请求，不会作为账号密码保存。</li>
+                        <li>任务在进入支付阶段前中断时，卡密会自动回滚；已进入支付阶段的任务需要人工核对。</li>
+                        <li>进度来自服务端任务记录；若长时间停留在「开通中」，可到「查询状态」查看。</li>
+                        <li>页面连接中断只会提示正在恢复，不代表开通失败，也不会自动重新提交。</li>
+                    </ul>
+                </details>
+            </aside>
+        </div>
+    </main>
 
     <script>
         const step1 = document.getElementById('step1');
@@ -176,6 +230,7 @@
         const publicForegroundSlotsMeta = document.getElementById('publicForegroundSlotsMeta');
         const flowStatusBadge = document.getElementById('flowStatusBadge');
         const flowStepper = document.getElementById('flowStepper');
+        const connState = document.getElementById('connState');
         const tabButtons = Array.from(document.querySelectorAll('.tab-btn'));
         let taskProgressValue = 0;
         let activationLocked = false;
@@ -186,6 +241,34 @@
             pro_5x: 'ChatGPT Pro 5x',
             pro_20x: 'ChatGPT Pro 20x'
         };
+
+        function escapeHtml(value) {
+            return String(value == null ? '' : value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // 连接状态只表达"通道是否可用"，不推断业务失败
+        function setConnState(state) {
+            if (!connState) {
+                return;
+            }
+            if (state === 'reconnecting') {
+                connState.hidden = false;
+                connState.textContent = '连接中断，正在恢复进度…（不会自动重新提交开通）';
+                return;
+            }
+            if (state === 'online') {
+                connState.hidden = true;
+                connState.textContent = '';
+                return;
+            }
+            connState.hidden = true;
+            connState.textContent = '';
+        }
 
         function updateFlowUI(step, status = 'pending') {
             if (flowStatusBadge) {
@@ -324,23 +407,23 @@
                     const resultHtml = `
                         <div class="query-result-card">
                             <div class="query-row"><span>CDK 类型</span><strong>自助激活码</strong></div>
-                            <div class="query-row"><span>当前状态</span><strong class="status-${statusClass}">${statusText}</strong></div>
-                            ${isUsed ? `<div class="query-row"><span>使用时间</span><strong>${data.data.usedAt || '-'}</strong></div>` : ''}
+                            <div class="query-row"><span>当前状态</span><strong class="status-${statusClass}">${escapeHtml(statusText)}</strong></div>
+                            ${isUsed ? `<div class="query-row"><span>使用时间</span><strong>${escapeHtml(data.data.usedAt || '-')}</strong></div>` : ''}
                         </div>
                     `;
                     showStatus(resultHtml, isUsed ? 'error' : 'success');
                 } else {
-                    showStatus(data.message, 'error');
+                    showStatus(escapeHtml(data.message || '查询失败'), 'error');
                 }
             } catch (error) {
-                showStatus('查询失败', 'error');
+                showStatus('查询失败，请稍后重试', 'error');
             } finally {
                 toggleLoading(queryBtn, false);
             }
         });
 
         let verifiedCdk = '';
-        const START_DEFAULT_TEXT = '确认并启动自动化开通';
+        const START_DEFAULT_TEXT = '确认开通';
         const START_PENDING_TEXT = '开通中...';
         const START_FAILED_TEXT = '重新尝试';
         const START_SUCCESS_TEXT = '激活成功';
@@ -456,7 +539,7 @@
                         showProgress();
                         setProgress(3, '正在恢复任务进度...');
                         updateFlowUI(2, 'running');
-                        showStatus(data.data?.message || '检测到当前 CDK 正在开通中，正在恢复任务进度...', 'success');
+                        showStatus(escapeHtml(data.data?.message || '检测到当前 CDK 正在开通中，正在恢复任务进度...'), 'success');
                         step1.style.display = 'none';
                         step2.style.display = 'block';
                         initWebSocket(data.data.jobKey);
@@ -470,18 +553,18 @@
                     let infoDiv = document.getElementById('redeemCdkInfo');
                     if (infoDiv) {
                         infoDiv.style.display = 'block';
-                        infoDiv.innerHTML = `<span>已验证卡密</span><code>${cdk}</code>`;
+                        infoDiv.innerHTML = `<span>已验证卡密</span><code>${escapeHtml(cdk)}</code>`;
                     }
                     const planDiv = document.getElementById('redeemPlanInfo');
                     const planType = data.data?.plan_type || 'plus';
                     const planLabel = data.data?.plan_label || PLAN_LABELS[planType] || PLAN_LABELS.plus;
                     if (planDiv) {
                         planDiv.style.display = 'block';
-                        planDiv.innerHTML = `<span>套餐类型</span><strong>${planLabel}</strong>`;
+                        planDiv.innerHTML = `<span>套餐类型</span><strong>${escapeHtml(planLabel)}</strong>`;
                     }
                     statusMsg.style.display = 'none';
                 } else {
-                    showStatus(data.message || '兑换码无效或已使用', 'error');
+                    showStatus(escapeHtml(data.message || '兑换码无效或已使用'), 'error');
                 }
             } catch (error) {
                 showStatus('网络请求失败', 'error');
@@ -594,7 +677,7 @@
                 setActivationLock(false);
                 setProgress(100, message || '激活成功', 'success', { force: true });
                 updateFlowUI(2, 'success');
-                showStatus(message || '激活成功！', 'success');
+                showStatus(escapeHtml(message || '激活成功！'), 'success');
                 setButtonText(startBtn, START_SUCCESS_TEXT);
                 toggleLoading(startBtn, false);
                 startBtn.disabled = true;
@@ -626,7 +709,7 @@
             if (Number.isFinite(progress)) {
                 setProgress(progress, message || '正在开通中...', 'running', { force: forceProgress });
                 if (message) {
-                    showStatus(message, 'success');
+                    showStatus(escapeHtml(message), 'success');
                 }
             }
         }
@@ -648,6 +731,7 @@
 
             socket.onopen = () => {
                 clearTimeout(reconnectTimer);
+                setConnState('online');
                 socket.send(JSON.stringify({ type: 'subscribe', jobKey }));
                 startSocketHeartbeat();
             };
@@ -675,6 +759,7 @@
                 clearSocketHeartbeat();
                 socket = null;
                 if (activeJobKey && !taskCompleted) {
+                    setConnState('reconnecting');
                     clearTimeout(reconnectTimer);
                     reconnectTimer = setTimeout(() => initWebSocket(activeJobKey), 3000);
                 }
@@ -726,7 +811,7 @@
                 } else {
                     hideProgress();
                     updateFlowUI(2, 'failed');
-                    showStatus(data.message || '启动失败', 'error');
+                    showStatus(escapeHtml(data.message || '启动失败'), 'error');
                     setButtonText(startBtn, START_FAILED_TEXT);
                     toggleLoading(startBtn, false);
                     startBtn.disabled = false;
@@ -849,23 +934,10 @@
             } catch (_) { }
         }
 
-        async function loadPaymentRegionHint() {
-            const hint = document.getElementById('paymentRegionHint');
-            if (!hint) return;
-            try {
-                const res = await fetch('/api/public/payment-region');
-                const data = await res.json();
-                if (data.success) {
-                    hint.textContent = `当前账单地区：${data.label || data.region}，结算币种：${data.currency || 'USD'}`;
-                }
-            } catch (_) { }
-        }
-
         updateFlowUI(1, 'pending');
-        loadPaymentRegionHint();
+        loadPublicRuntime();
         loadPublicRuntime();
         publicRuntimeTimer = setInterval(loadPublicRuntime, 3000);
-        lucide.createIcons();
     </script>
 </body>
 

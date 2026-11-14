@@ -4,7 +4,7 @@ const { getRegionConfig } = require('./region-config');
 const { assertChatGptLoggedIn } = require('./session-auth');
 const { clearHumanVerification } = require('./human-verification');
 
-const PRICING_URL = 'https://chatgpt.com/#pricing';
+const PRICING_URL = 'https://chatgpt.com/';
 
 const REGION_UI_LABELS = {
     PH: ['菲律宾', 'Philippines', 'Pilipinas'],
@@ -44,10 +44,124 @@ const REGION_CURRENT_COUNTRY_HINTS = {
 const SKIP_REGION_BUTTON_TEXT = /^(Upgrade|Personal|Business|Free|Plus|Pro|Subscribe|Close|Your current plan|升级|订阅|关闭)$/i;
 
 const PLAN_UPGRADE_PATTERNS = {
-    plus: [/升级至\s*Plus/i, /Upgrade to Plus/i, /Get Plus/i, /Subscribe to Plus/i, /^Upgrade$/i],
-    pro_5x: [/升级至\s*Pro/i, /Upgrade to Pro/i, /Get Pro/i, /^Upgrade$/i],
-    pro_20x: [/升级至\s*Pro/i, /Upgrade to Pro/i, /Get Pro/i, /^Upgrade$/i]
+    plus: [
+        /升级至\s*Plus/i,
+        /Upgrade to Plus/i,
+        /Get Plus/i,
+        /Subscribe to Plus/i,
+        /Try Plus/i,
+        /Buy now/i,
+        /^Buy$/i,
+        /Purchase/i,
+        /^Subscribe$/i,
+        /Get started/i,
+        /Start now/i,
+        /Start.*Plus.*trial/i,
+        /Plus.*free trial/i,
+        /免费.*Plus/i,
+        /^Upgrade$/i
+    ],
+    pro_5x: [/升级至\s*Pro/i, /Upgrade to Pro/i, /Get Pro/i, /Buy now/i, /Get started/i, /Purchase/i, /^Upgrade$/i],
+    pro_20x: [/升级至\s*Pro/i, /Upgrade to Pro/i, /Get Pro/i, /Buy now/i, /Get started/i, /Purchase/i, /^Upgrade$/i]
 };
+
+const PLAN_READY_PATTERN = /Buy now|Get started|Start now|Upgrade to Plus|Upgrade to Pro|Get Plus|Get Pro|Try Plus|Subscribe to Plus/i;
+
+function matchesPlanCta(text, planType = 'plus') {
+    const patterns = PLAN_UPGRADE_PATTERNS[String(planType || 'plus').toLowerCase()] || PLAN_UPGRADE_PATTERNS.plus;
+    const value = String(text || '');
+    return patterns.some((pattern) => pattern.test(value));
+}
+
+const GIF_PROMO_PATTERN = /Create GIFs with ChatGPT|Animate a favorite photo/i;
+
+async function isGifPromoVisible(page) {
+    return page.getByText(GIF_PROMO_PATTERN).first().isVisible({ timeout: 800 }).catch(() => false);
+}
+
+async function waitForPricingPlansReady(page, timeout = 25000) {
+    const deadline = Date.now() + timeout;
+    let loadingLogged = false;
+    while (Date.now() < deadline) {
+        if (await pageOrFramesHasText(page, PLAN_READY_PATTERN)) {
+            return true;
+        }
+        if (!loadingLogged && await pageOrFramesHasText(page, /Loading plans/i)) {
+            console.log('⏳ [步骤] 定价套餐仍在加载，等待加载完成...');
+            loadingLogged = true;
+        }
+        await page.waitForTimeout(600);
+    }
+    console.warn('⚠️ [Warn] 定价套餐加载超时，将继续尝试查找升级按钮');
+    return false;
+}
+
+/**
+ * 关闭定价页上遮盖套餐按钮的推广弹窗（如 Create GIFs with ChatGPT）。
+ */
+async function dismissPricingOverlays(page) {
+    if (!(await isGifPromoVisible(page))) {
+        return false;
+    }
+
+    console.log('🪟 [步骤] 检测到推广弹窗，正在关闭...');
+    const promoDialog = page.locator('[role="dialog"]').filter({ hasText: GIF_PROMO_PATTERN }).last();
+    const closeSelectors = [
+        'button[aria-label="Close" i]',
+        'button[aria-label="Dismiss" i]',
+        'button[aria-label="关闭"]',
+        'button[title="Close" i]',
+        'button[title="关闭"]'
+    ];
+
+    for (const selector of closeSelectors) {
+        const closeBtn = promoDialog.locator(selector).first();
+        if (await closeBtn.isVisible({ timeout: 600 }).catch(() => false)) {
+            await closeBtn.click({ timeout: 5000 }).catch(() => {});
+            await page.waitForTimeout(700);
+            if (!(await isGifPromoVisible(page))) {
+                console.log('✅ [步骤] 推广弹窗已关闭');
+                return true;
+            }
+        }
+    }
+
+    const clickedInDom = await promoDialog.evaluate((root) => {
+        const buttons = Array.from(root.querySelectorAll('button'));
+        const named = buttons.find((btn) => {
+            const label = `${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('title') || ''}`;
+            return /close|dismiss|关闭/i.test(label);
+        });
+        if (named) {
+            named.click();
+            return true;
+        }
+        const iconOnly = buttons.find((btn) => !String(btn.textContent || '').trim() && btn.querySelector('svg'));
+        if (iconOnly) {
+            iconOnly.click();
+            return true;
+        }
+        return false;
+    }).catch(() => false);
+
+    if (clickedInDom) {
+        await page.waitForTimeout(700);
+        if (!(await isGifPromoVisible(page))) {
+            console.log('✅ [步骤] 推广弹窗已关闭');
+            return true;
+        }
+    }
+
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(600);
+    const gone = !(await isGifPromoVisible(page));
+    if (gone) {
+        console.log('✅ [步骤] 推广弹窗已关闭');
+    } else {
+        console.warn('⚠️ [Warn] 推广弹窗仍然可见，将继续尝试点击升级按钮');
+    }
+    return gone;
+}
 
 function normalizeOptionText(text) {
     return String(text || '').replace(/\s+/g, ' ').trim();
@@ -78,6 +192,15 @@ async function isPersonalPlanView(page) {
         return false;
     }
 
+    const personalTab = page.locator('[role="tab"]').filter({ hasText: /^Personal$/i }).first();
+    if (await personalTab.isVisible({ timeout: 800 }).catch(() => false)) {
+        const selected = await personalTab.getAttribute('aria-selected').catch(() => null);
+        const state = await personalTab.getAttribute('data-state').catch(() => null);
+        if (selected === 'true' || state === 'active') {
+            return true;
+        }
+    }
+
     const plusCard = await page.locator('[role="dialog"]').locator('div').filter({
         hasText: /ChatGPT Plus|^Plus$/
     }).filter({
@@ -93,7 +216,18 @@ async function isPersonalPlanView(page) {
         .first()
         .isVisible({ timeout: 800 })
         .catch(() => false);
-    return plusTitle || plusBtn;
+    const getStarted = await page.getByRole('button', { name: /Get started/i }).first()
+        .isVisible({ timeout: 800 })
+        .catch(() => false);
+    const buyNow = await page.getByRole('button', { name: /Buy now|Purchase/i }).first()
+        .isVisible({ timeout: 800 })
+        .catch(() => false);
+    const advancedCapabilities = await page.getByText(/Advanced capabilities/i).first()
+        .isVisible({ timeout: 800 })
+        .catch(() => false);
+    const plusLabel = await page.getByText(/^Plus$/i).first().isVisible({ timeout: 500 }).catch(() => false);
+
+    return plusTitle || plusBtn || ((getStarted || buyNow) && (advancedCapabilities || plusLabel));
 }
 
 async function isBusinessPlanView(page) {
@@ -562,12 +696,129 @@ async function waitForPricingPage(page, timeout = 60000) {
     await clearHumanVerification(page, { phase: 'pricing-page', maxWaitMs: 120000 });
 
     await assertChatGptLoggedIn(page, '定价页');
+    await dismissPricingOverlays(page);
 
     const url = page.url();
     if (!url.includes('chatgpt.com')) {
         throw new Error(`定价页打开失败，当前 URL: ${url}`);
     }
-    console.log('✅ [步骤] 已打开 ChatGPT 定价页 (#pricing)');
+
+    if (!(await hasPricingView(page))) {
+        console.log('🧭 [步骤] 未检测到定价界面，正在从首页点击 Upgrade 入口...');
+        if (!(await openPricingView(page))) {
+            throw new Error('未能打开套餐/定价界面：首页和侧边栏都没有可用的 Upgrade 入口');
+        }
+        await dismissPricingOverlays(page);
+    }
+
+    await waitForPricingPlansReady(page, 30000);
+    console.log('✅ [步骤] 已打开 ChatGPT 套餐/定价界面');
+}
+
+async function hasPricingView(page) {
+    const dialog = page.locator('[role="dialog"]').first();
+    if (await dialog.isVisible({ timeout: 1200 }).catch(() => false)) {
+        const text = String(await dialog.innerText({ timeout: 3000 }).catch(() => '') || '');
+        if (/Upgrade your plan|Choose your plan|ChatGPT Plus|ChatGPT Pro|Personal|Business/i.test(text)) {
+            return true;
+        }
+    }
+    return pageOrFramesHasText(page, /Upgrade your plan|Choose your plan/i);
+}
+
+async function openPricingView(page) {
+    if (await hasPricingView(page)) {
+        return true;
+    }
+
+    const entryPoints = [
+        page.getByRole('button', { name: /^Upgrade$/i }),
+        page.getByRole('link', { name: /^Upgrade$/i }),
+        page.getByRole('button', { name: /^升级$|^升级套餐$/ }),
+        page.getByText(/^Upgrade$/i)
+    ];
+
+    for (const entries of entryPoints) {
+        const count = await entries.count().catch(() => 0);
+        for (let i = count - 1; i >= 0; i -= 1) {
+            const entry = entries.nth(i);
+            try {
+                if (!(await entry.isVisible({ timeout: 800 }).catch(() => false))) {
+                    continue;
+                }
+                await entry.scrollIntoViewIfNeeded().catch(() => {});
+                await entry.click({ timeout: 8000 });
+                await page.waitForTimeout(2500);
+                if (await hasPricingView(page)) {
+                    console.log('✅ [步骤] 已打开套餐/定价弹窗');
+                    return true;
+                }
+            } catch (_) { /* try next */ }
+        }
+    }
+
+    if (await openAccountMenu(page)) {
+        const menuUpgradeCandidates = [
+            page.getByRole('menuitem', { name: /Upgrade|升级/i }).first(),
+            page.getByRole('button', { name: /Upgrade plan|升级套餐|^Upgrade$|^升级$/i }).first(),
+            page.getByText(/Upgrade plan|升级套餐/i).first()
+        ];
+        for (const item of menuUpgradeCandidates) {
+            try {
+                if (!(await item.isVisible({ timeout: 1200 }).catch(() => false))) {
+                    continue;
+                }
+                await item.click({ timeout: 8000 });
+                await page.waitForTimeout(2500);
+                if (await hasPricingView(page)) {
+                    console.log('✅ [步骤] 已从账号菜单打开套餐/定价界面');
+                    return true;
+                }
+            } catch (_) { /* try next */ }
+        }
+        if (await hasPricingView(page)) {
+            return true;
+        }
+        const menuText = String(await page.locator('[role="menu"], [role="dialog"]').last().innerText({ timeout: 2000 }).catch(() => '') || '').replace(/\s+/g, ' ').slice(0, 200);
+        if (menuText) {
+            console.log(`[Info] 账号菜单内容: ${menuText}`);
+        }
+        await page.keyboard.press('Escape').catch(() => {});
+    }
+
+    for (const pricingUrl of ['https://chatgpt.com/#pricing', 'https://chatgpt.com/pricing']) {
+        try {
+            await page.goto(pricingUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForTimeout(2500);
+            if (await hasPricingView(page)) {
+                console.log(`✅ [步骤] 已通过 ${pricingUrl} 打开套餐/定价界面`);
+                return true;
+            }
+        } catch (_) { /* try next */ }
+    }
+
+    return false;
+}
+
+async function openAccountMenu(page) {
+    const candidates = [
+        page.locator('button').filter({ hasText: /\bFree\b|免费/ }).last(),
+        page.locator('[role="button"]').filter({ hasText: /\bFree\b|免费/ }).last(),
+        page.locator('nav button').last(),
+        page.locator('aside button').last()
+    ];
+
+    for (const entry of candidates) {
+        try {
+            if (!(await entry.isVisible({ timeout: 800 }).catch(() => false))) {
+                continue;
+            }
+            await entry.click({ timeout: 8000 });
+            await page.waitForTimeout(1500);
+            return true;
+        } catch (_) { /* try next */ }
+    }
+    return false;
 }
 
 /**
@@ -577,6 +828,7 @@ async function selectPricingRegion(page, regionCode) {
     const code = String(regionCode || 'PH').toUpperCase();
     const regionConfig = getRegionConfig(code);
     console.log(`🌏 [步骤] 正在选择账单地区: ${regionConfig?.label || code}...`);
+    await dismissPricingOverlays(page);
 
     if (await pageShowsTargetRegionPricing(page, code)) {
         console.log(`✅ [步骤] 定价页已显示目标地区价格 (${code})，跳过地区切换`);
@@ -638,25 +890,29 @@ async function clickPlanUpgrade(page, planType) {
     console.log(`📦 [步骤] 正在点击升级按钮 (套餐: ${plan})...`);
 
     await assertChatGptLoggedIn(page, '升级前');
+    await dismissPricingOverlays(page);
     await switchToPersonalPlans(page);
+    await dismissPricingOverlays(page);
     await page.waitForTimeout(1000);
 
     for (const pattern of patterns) {
-        try {
-            const btn = page.getByRole('button', { name: pattern }).first();
-            if (await btn.isVisible({ timeout: 4000 })) {
-                await btn.scrollIntoViewIfNeeded().catch(() => {});
-                await btn.click({ timeout: 10000 });
-                console.log(`✅ [步骤] 已点击升级按钮: ${pattern}`);
-                return;
-            }
-        } catch (_) { /* try next */ }
+        for (const role of ['button', 'link']) {
+            try {
+                const btn = page.getByRole(role, { name: pattern }).first();
+                if (await btn.isVisible({ timeout: 4000 })) {
+                    await btn.scrollIntoViewIfNeeded().catch(() => {});
+                    await btn.click({ timeout: 10000 });
+                    console.log(`✅ [步骤] 已点击升级按钮: ${pattern}`);
+                    return;
+                }
+            } catch (_) { /* try next */ }
+        }
     }
 
     const cardTitle = plan === 'plus' ? /ChatGPT Plus/i : /ChatGPT Pro/i;
     try {
         const card = page.locator('div').filter({ hasText: cardTitle }).filter({ has: page.getByRole('button') }).first();
-        const btn = card.getByRole('button').filter({ hasText: /升级|Upgrade|Subscribe|Get/i }).first();
+        const btn = card.getByRole('button').filter({ hasText: /升级|Upgrade|Subscribe|Get|Try|Free|免费/i }).first();
         if (await btn.isVisible({ timeout: 3000 })) {
             await btn.scrollIntoViewIfNeeded().catch(() => {});
             await btn.click({ timeout: 10000 });
@@ -684,6 +940,10 @@ async function clickPlanUpgrade(page, planType) {
         ? [
             'button:has-text("升级至 Plus")',
             'button:has-text("Upgrade to Plus")',
+            'button:has-text("Try Plus")',
+            'a:has-text("Try Plus")',
+            'button:has-text("Get started")',
+            'a:has-text("Get started")',
             '[role="dialog"] >> text=ChatGPT Plus >> .. >> .. >> button:has-text("Upgrade")',
             'text=ChatGPT Plus >> xpath=ancestor::div[.//button[contains(., "Upgrade") or contains(., "升级")]][1] >> button'
         ]
@@ -717,35 +977,182 @@ async function clickPlanUpgrade(page, planType) {
     throw new Error(`未找到 ${plan} 套餐的升级按钮，请确认账号可升级且 Session 已登录`);
 }
 
-async function waitForCheckoutPage(page, timeout = 90000) {
+function isCheckoutLikeUrl(value) {
+    const url = String(value || '');
+    return /chatgpt\.com\/checkout|pay\.openai\.com|\/c\/pay\//i.test(url);
+}
+
+function extractCheckoutUrlFromPayload(data) {
+    if (!data || typeof data !== 'object') {
+        return '';
+    }
+    const direct = String(data.url || data.checkout_url || '').trim();
+    if (/^https?:/i.test(direct)) {
+        return direct;
+    }
+    const sessionId = String(
+        data.checkout_session_id
+        || data.checkoutSessionId
+        || data.session_id
+        || data.sessionId
+        || ''
+    ).trim();
+    if (sessionId) {
+        return `https://chatgpt.com/checkout/openai_llc/${sessionId}`;
+    }
+    const json = JSON.stringify(data);
+    const match = json.match(/(cs_(?:live|test)_[A-Za-z0-9]+|oaics_[a-f0-9]+)/i);
+    return match ? `https://chatgpt.com/checkout/openai_llc/${match[1]}` : '';
+}
+
+function captureCheckoutSession(page) {
+    const captured = { url: '', sessionId: '' };
+    const handler = (response) => {
+        const responseUrl = response.url();
+        const directMatch = responseUrl.match(/(cs_(?:live|test)_[A-Za-z0-9]+|oaics_[a-f0-9]+)/i);
+        if (directMatch && !captured.sessionId) {
+            captured.sessionId = directMatch[1];
+        }
+        const location = String(response.headers()?.location || '');
+        if (!captured.url && isCheckoutLikeUrl(location)) {
+            captured.url = location;
+        }
+        if (!/checkout|payments/i.test(responseUrl)) {
+            return;
+        }
+        response.json().then((data) => {
+            const url = extractCheckoutUrlFromPayload(data);
+            if (url && !captured.url) {
+                captured.url = url;
+                console.log(`🔗 [Checkout] 已捕获支付地址: ${url.slice(0, 120)}...`);
+            }
+        }).catch(() => {});
+    };
+    page.on('response', handler);
+    return {
+        captured,
+        dispose: () => page.off('response', handler)
+    };
+}
+
+function getCheckoutFrameUrl(page) {
+    const urls = [page.url(), ...page.frames().map((frame) => frame.url())];
+    return urls.find((url) => isCheckoutLikeUrl(url)) || '';
+}
+
+function getCheckoutPageFromContext(page) {
+    if (!page || typeof page.context !== 'function') return null;
+    const pages = page.context().pages() || [];
+    return pages.find((item) => item && !item.isClosed() && item !== page && isCheckoutLikeUrl(item.url())) || null;
+}
+
+async function pageOrFramesHasText(page, pattern) {
+    const targets = [page, ...page.frames().filter((frame) => frame !== page.mainFrame())];
+    for (const target of targets) {
+        try {
+            if (await target.getByText(pattern).first().isVisible({ timeout: 1200 })) {
+                return true;
+            }
+        } catch (_) { /* try next target */ }
+    }
+    return false;
+}
+
+async function clickCheckoutRetry(page) {
+    const targets = [page, ...page.frames().filter((frame) => frame !== page.mainFrame())];
+    for (const target of targets) {
+        try {
+            const retry = target.getByRole('button', { name: /Retry|重试/i }).first();
+            if (await retry.isVisible({ timeout: 1200 })) {
+                await retry.click({ timeout: 5000 });
+                return true;
+            }
+        } catch (_) { /* try next target */ }
+    }
+    return false;
+}
+
+async function waitForCheckoutPage(page, timeout = 60000, captured = null) {
     console.log('💳 [步骤] 等待跳转到 Checkout 配置套餐页...');
     const deadline = Date.now() + timeout;
+    let retries = 0;
 
     while (Date.now() < deadline) {
-        const url = page.url();
-        if (url.includes('/checkout/') || url.includes('chatgpt.com/checkout')) {
+        const popupCheckout = getCheckoutPageFromContext(page);
+        const url = getCheckoutFrameUrl(page) || (popupCheckout ? popupCheckout.url() : '');
+        if (url) {
             await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
             await page.waitForTimeout(2000);
             await assertChatGptLoggedIn(page, 'Checkout');
-            console.log(`✅ [步骤] Checkout 页面已打开: ${url.slice(0, 80)}...`);
+            console.log(`✅ [步骤] Checkout 页面已打开: ${url.slice(0, 120)}...`);
             return url;
         }
-        if (url.includes('accounts.google.com')) {
+        const currentUrl = page.url();
+        if (currentUrl.includes('accounts.google.com')) {
             throw new Error('Session 未生效：升级后跳转到 Google 登录页');
+        }
+
+        const snag = await pageOrFramesHasText(page, /ChatGPT hit a snag|Something went wrong while|We're having trouble/i);
+        if (snag) {
+            throw new Error('ChatGPT 返回错误页（ChatGPT hit a snag），创建 Checkout 被服务端拒绝；通常是账号/地区/代理风控导致，请更换环境后重试');
+        }
+
+        const configureVisible = await pageOrFramesHasText(page, /Configure your plan/i);
+        if (configureVisible) {
+            const formFailed = await pageOrFramesHasText(page, /Unable to load payment form/i);
+            if (formFailed) {
+                if (retries < 3) {
+                    retries += 1;
+                    console.log(`⚠️ [Checkout] 支付表单加载失败，正在点击 Retry (${retries}/3)...`);
+                    await clickCheckoutRetry(page);
+                    await page.waitForTimeout(5000);
+                    continue;
+                }
+                if (captured?.url) {
+                    console.warn('[Warn] 支付表单加载失败，但已捕获 Checkout 地址，将继续返回该地址');
+                    return captured.url;
+                }
+                throw new Error('Checkout 配置页已打开，但支付表单持续加载失败（Unable to load payment form），通常是代理/风控导致');
+            }
+
+            if (captured?.url) {
+                console.log('✅ [步骤] 已进入 Checkout 配置页，并使用捕获到的支付地址');
+                return captured.url;
+            }
+        }
+
+        if (captured?.url && Date.now() + 3000 >= deadline) {
+            return captured.url;
         }
         await page.waitForTimeout(1000);
     }
 
+    if (captured?.url) {
+        console.log('✅ [步骤] 使用捕获到的 Checkout 支付地址');
+        return captured.url;
+    }
     throw new Error(`等待 Checkout 页面超时，当前 URL: ${page.url()}`);
 }
 
 async function openPricingCheckout(page, { region, planType }) {
-    await waitForPricingPage(page);
-    await switchToPersonalPlans(page);
-    await selectPricingRegion(page, region);
-    await clickPlanUpgrade(page, planType);
-    const checkoutUrl = await waitForCheckoutPage(page);
-    return checkoutUrl;
+    const capture = captureCheckoutSession(page);
+    try {
+        await waitForPricingPage(page);
+        await switchToPersonalPlans(page);
+        await selectPricingRegion(page, region);
+        await clickPlanUpgrade(page, planType);
+        const checkoutUrl = await waitForCheckoutPage(page, 60000, capture.captured);
+        const popup = getCheckoutPageFromContext(page);
+        if (popup) {
+            const popupUrl = popup.url();
+            console.log('[Checkout] 检测到 Checkout 在新标签页打开，正在切回当前标签页继续支付');
+            await page.goto(popupUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+            await popup.close().catch(() => {});
+        }
+        return checkoutUrl || capture.captured.url;
+    } finally {
+        capture.dispose();
+    }
 }
 
 module.exports = {
@@ -756,5 +1163,7 @@ module.exports = {
     switchToPersonalPlans,
     clickPlanUpgrade,
     waitForCheckoutPage,
-    pageShowsTargetRegionPricing
+    pageShowsTargetRegionPricing,
+    extractCheckoutUrlFromPayload,
+    isCheckoutLikeUrl
 };

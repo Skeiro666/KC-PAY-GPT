@@ -17,6 +17,7 @@ debug_screenshots/
 product_files/
 data/hcaptcha-config.json
 data/browser-pool/
+data/card-encryption.key
 scratch/
 mail.txt
 
@@ -39,6 +40,13 @@ Thumbs.db
 *.sql.gz
 *.sqlite
 *.db
+
+# 临时脚本 / 日志 / 构建产物
+.tmp-*
+*.log
+output/
+tmp/
+/$null
 
 # Sister project (kept as a separate repo)
 plus_gopay/

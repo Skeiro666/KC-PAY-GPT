@@ -259,19 +259,24 @@ async function batchGenerateUsAddresses(count = 10) {
 }
 
 /**
- * 支付结账时选取账单地址：优先 US 地址池，池空则即时随机生成
+ * 支付结账时始终选取美国免税账单地址。
+ * 账单地址与支付地区解耦：即使支付地区是 PH/SG/MY，也使用美国免税州地址。
+ * 美国地址池为空时即时生成一条美国免税地址。
+ * @param {string} _region - 保留参数以兼容调用方；不参与地址选择
  * @param {number|null} lastUsedId
  * @returns {Promise<{ id: number, line1: string, city: string, state: string, postal_code: string, country: string, generated?: boolean }>}
  */
-async function pickBillingAddressForCheckout(lastUsedId = null) {
+async function pickBillingAddressForCheckout(_region, lastUsedId = null) {
     let picked;
     try {
         picked = await pickTaxFreeAddress('US', lastUsedId);
-    } catch (_) {
+    } catch (error) {
         picked = { id: 0, ...generateRandomUsTaxFreeAddress() };
     }
+
     return {
         ...picked,
+        country: 'US',
         state: normalizeUsStateName(picked.state)
     };
 }

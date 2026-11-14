@@ -76,6 +76,10 @@ DB_PASSWORD=your_strong_mysql_password   # MySQL root 密码
 ADMIN_PASSWORD=your_admin_password         # 后台登录密码
 PROXY=http://user:pass@proxy-host:port     # 本地自動化或第三方訂單代理（選填）
 BROWSER_POOL=0                              # 預設關閉瀏覽器池
+BROWSER_PROVIDER=chrome                     # chrome = 本地 Chrome 池；bitbrowser = 比特瀏覽器
+BITBROWSER_API_URL=http://127.0.0.1:54345   # 比特瀏覽器本地 API
+BITBROWSER_PROFILE_ID=                      # 要使用的比特瀏覽器環境 ID
+BITBROWSER_HEADLESS=1                       # 1 = 無頭啟動
 ```
 
 #### 3. 一键启动
@@ -233,7 +237,11 @@ DB_NAME=plus_papay
 ADMIN_PASSWORD=你的后台密码
 PROXY=http://user:pass@proxy-host:port
 HEADFUL=0          # 调试时可设为 1 开启有头浏览器
+AUTO_CANCEL_RENEW=1        # 支付成功后自动关闭订阅续费
+AUTO_CANCEL_RENEW_DELAY_MS=8000
 ```
+
+`AUTO_CANCEL_RENEW=1` 会在支付成功后等待订阅生效，再自动调用取消续费接口；失败会重试并在日志中输出 `AUTO_RENEW_CANCEL_FAILED`，此时可到后台「续费管理」手动取消。
 
 **⑥ 启动服务**
 
@@ -310,6 +318,19 @@ sudo certbot --nginx -d your-domain.com
 
 ---
 
+## 银行卡数据加密
+
+卡池中的卡号、有效期、CVC、持卡人姓名使用 **AES-256-GCM** 加密后写入 `card_assets`，旧版明文数据会在服务启动时自动迁移并清空明文字段。账单表同样只保存加密卡号与后四位，后台接口和 CSV 导出只显示 `**** **** **** 1234`。
+
+加密密钥按以下优先级读取：
+
+1. `CARD_ENCRYPTION_KEY` 环境变量（64 位 hex 或 32 字节密钥）
+2. `data/card-encryption.key` 文件（首次启动自动生成）
+
+**务必备份密钥**；密钥丢失后，已加密的卡数据无法恢复。该项目仍需保存原始 CVC 以自动填写 Stripe 表单，因此不具备 PCI DSS 合规性，不建议存放真实高额度主卡。
+
+---
+
 ## 主要功能
 
 | 模块 | 说明 |
@@ -319,6 +340,7 @@ sudo certbot --nginx -d your-domain.com
 | **支付地区** | PH / US / SG / MY 可切换，配套免税地址池 |
 | **账单审计** | 自动记录每笔支付，支持筛选与 CSV 导出 |
 | **瀏覽器池** | 本地自動化的可選多槽位模式；目前預設關閉（`BROWSER_POOL=0`） |
+| **比特瀏覽器** | 設定 `BROWSER_PROVIDER=bitbrowser` 後，開啟指定環境並以 CDP 接入；單環境串行執行 |
 | **hCaptcha** | VLM / 打码平台 / Python solver 多通道 |
 | **反指纹** | Stealth + 30+ 指纹点修正，支持真 Chrome / Edge |
 | **Telegram 通知** | 任务成功 / 失败推送（后台配置） |

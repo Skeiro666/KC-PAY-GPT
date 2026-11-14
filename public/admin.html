@@ -6,8 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KC GPT自动充值系统 | 控制台</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="vendor/lucide.min.js"></script>
+    <script>if (!window.lucide) { window.lucide = { createIcons: function () { } }; }</script>
     <style>
         /* ============================================================
          * Enterprise Blue SaaS Theme — 后台控制台
@@ -61,7 +61,7 @@
             margin: 0;
             padding: 0;
             box-sizing: border-box;
-            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            font-family: var(--font-sans);
         }
 
         html, body {
@@ -1697,6 +1697,24 @@
             flex-wrap: wrap;
         }
     </style>
+    <meta name="theme-color" content="#faf9f7">
+    <script>
+        /* 预绘制应用主题，避免暗色模式闪白 */
+        (function () {
+            try {
+                var t = localStorage.getItem('kc.theme');
+                var dark = t === 'dark' || (t !== 'light' &&
+                    window.matchMedia('(prefers-color-scheme: dark)').matches);
+                document.documentElement.classList.toggle('dark', dark);
+                var c = localStorage.getItem('kc.color');
+                if (c && c !== 'coral') document.documentElement.setAttribute('data-color', c);
+            } catch (e) { }
+        })();
+    </script>
+    <link rel="stylesheet" href="css/tokens.css">
+    <link rel="stylesheet" href="css/admin.css">
+    <link rel="stylesheet" href="css/orion-admin.css">
+    <script src="js/theme.js" defer></script>
 </head>
 
 <body>
@@ -2316,7 +2334,7 @@
             <div class="panel" style="margin-top: 24px;">
                 <h2 class="panel-title">支付地区设置</h2>
                 <p style="font-size: 13px; color: var(--text-dim); margin-top: 10px;">
-                    选择支付地区后，系统将使用对应的币种进行 Stripe 支付。账单地址请在左侧「免税地址」页面管理。
+                    选择支付地区后，系统将使用对应的币种和同地区账单地址进行 Stripe 支付。请先在左侧「免税地址」中添加该地区的地址。
                 </p>
                 <div style="display: flex; align-items: center; gap: 12px; margin-top: 18px; flex-wrap: wrap;">
                     <div class="form-group" style="margin-bottom: 0; flex: 1; min-width: 180px; max-width: 280px;">
@@ -2529,16 +2547,16 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
         <div id="tax_addresses" class="page-view">
             <div class="page-header">
                 <h1>免税地址</h1>
-                <p>管理美国免税州账单地址池（Oregon / Delaware / Montana / New Hampshire / Alaska）。支付时随机选取；州名使用完整英文（如 Oregon）以匹配结账下拉框。</p>
+                <p id="tax_address_page_desc">按支付地区管理账单地址池。支付时只会选取与当前支付地区一致的地址，不会跨地区混用。</p>
             </div>
 
             <div class="panel">
                 <div class="panel-header">
-                    <h2 class="panel-title">美国免税地址池</h2>
+                    <h2 class="panel-title" id="address_pool_title">菲律宾 / PH 地址池</h2>
                     <div style="display:flex; gap:8px; flex-wrap:wrap;">
                         <button type="button" class="btn btn-primary" id="btn_generate_us_addresses" onclick="generateRandomUsAddresses()">
                             <i data-lucide="shuffle"></i>
-                            批量生成（10 条）
+                            生成美国免税地址（10 条）
                         </button>
                         <button type="button" class="btn btn-secondary" onclick="clearUnboundAddresses()" title="删除所有从未支付成功绑定过的地址">
                             <i data-lucide="eraser"></i>
@@ -2550,8 +2568,18 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                         </button>
                     </div>
                 </div>
-                <p style="font-size: 13px; color: var(--text-dim); margin-bottom: 16px;">
-                    支付结账时优先从地址池随机选取；池为空则系统自动即时生成。持卡人姓名由前台自动化随机生成，无需在此配置。
+                <div style="display:flex; align-items:center; gap:12px; margin: 0 0 16px; flex-wrap:wrap;">
+                    <label style="font-size:13px; color:var(--text-dim);">地址池地区</label>
+                    <select id="address_region_selector" class="asset-input" style="max-width:260px;" onchange="onAddressRegionChange()">
+                        <option value="PH">菲律宾 (PH) — PHP</option>
+                        <option value="US">美国 (US) — USD</option>
+                        <option value="SG">新加坡 (SG) — SGD</option>
+                        <option value="MY">马来西亚 (MY) — MYR</option>
+                    </select>
+                    <span style="font-size:12px; color:var(--text-dim);">实际支付使用「系统配置 → 支付地区」；此处仅切换要管理的地址池。</span>
+                </div>
+                <p id="address_pool_hint" style="font-size: 13px; color: var(--text-dim); margin-bottom: 16px;">
+                    支付结账时只会使用当前支付地区的地址。非美国地区需要先手动添加地址；持卡人姓名由前台自动化随机生成。
                 </p>
 
                 <!-- 地址表单（新增/编辑） -->
@@ -2575,7 +2603,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                             <span id="addr_city_err" style="font-size:12px; color:var(--error); display:none;"></span>
                         </div>
                         <div class="form-group" style="margin-bottom: 0;">
-                            <label>州 (state，完整英文名) <span style="color:var(--error)">*</span></label>
+                            <label id="addr_state_label">州/省 (state) <span style="color:var(--error)">*</span></label>
                             <input type="text" id="addr_state" class="asset-input" placeholder="Oregon" maxlength="100">
                             <span id="addr_state_err" style="font-size:12px; color:var(--error); display:none;"></span>
                         </div>
@@ -4836,7 +4864,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
             }
 
             if (pId === 'tax_addresses') {
-                loadAddressList('US').catch(() => { });
+                loadTaxAddressPage().catch(() => { });
             }
 
             if (pId === 'proxies') {
@@ -7675,6 +7703,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
         // ─── Region & Address Management ───────────────────────────────────────────
         let regionAddressList = [];
         let currentRegion = 'PH';
+        let addressRegion = 'PH';
         let checkoutPlanMap = { plus: 'chatgptplusplan', pro_5x: 'chatgptprolite', pro_20x: 'chatgptpro' };
         let checkoutDebugJobKey = '';
         let checkoutDebugLogAfter = 0;
@@ -8166,9 +8195,68 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
             return raw;
         }
 
+        const ADDRESS_REGION_LABELS = {
+            PH: '菲律宾 / PH',
+            US: '美国 / US',
+            SG: '新加坡 / SG',
+            MY: '马来西亚 / MY'
+        };
+
+        function updateAddressRegionUi() {
+            const label = ADDRESS_REGION_LABELS[addressRegion] || addressRegion;
+            const title = document.getElementById('address_pool_title');
+            if (title) title.textContent = `${label} 地址池`;
+
+            const desc = document.getElementById('tax_address_page_desc');
+            if (desc) {
+                desc.textContent = addressRegion === 'US'
+                    ? '管理美国免税州账单地址池（Oregon / Delaware / Montana / New Hampshire / Alaska）。支付时只会使用美国地址池。'
+                    : `管理${label}账单地址池。支付地区为 ${addressRegion} 时只会使用这里的地址，不会自动套用美国地址。`;
+            }
+
+            const hint = document.getElementById('address_pool_hint');
+            if (hint) {
+                hint.textContent = addressRegion === 'US'
+                    ? '支付结账时从美国地址池随机选取；池为空时会即时生成一条美国免税地址。'
+                    : '非美国地区不会自动生成地址，请手动添加与支付地区一致的账单地址；地址池为空时支付会明确报错并停止。';
+            }
+
+            const stateLabel = document.getElementById('addr_state_label');
+            if (stateLabel) {
+                stateLabel.innerHTML = addressRegion === 'US'
+                    ? '州 (state，完整英文名) <span style="color:var(--error)">*</span>'
+                    : '州/省 (state) <span style="color:var(--error)">*</span>';
+            }
+
+            const generateBtn = document.getElementById('btn_generate_us_addresses');
+            if (generateBtn) {
+                generateBtn.style.display = addressRegion === 'US' ? '' : 'none';
+            }
+        }
+
+        async function loadTaxAddressPage() {
+            await loadRegionConfig();
+            addressRegion = currentRegion || 'PH';
+            const selector = document.getElementById('address_region_selector');
+            if (selector) selector.value = addressRegion;
+            updateAddressRegionUi();
+            await loadAddressList(addressRegion);
+        }
+
+        function onAddressRegionChange() {
+            const selector = document.getElementById('address_region_selector');
+            addressRegion = String(selector?.value || 'PH').toUpperCase();
+            hideAddressForm();
+            updateAddressRegionUi();
+            return loadAddressList(addressRegion);
+        }
+
         async function loadAddressList(region) {
+            addressRegion = String(region || addressRegion).toUpperCase();
+            const selector = document.getElementById('address_region_selector');
+            if (selector) selector.value = addressRegion;
             try {
-                const res = await authFetch(`/api/admin/addresses?region=${encodeURIComponent(region)}`);
+                const res = await authFetch(`/api/admin/addresses?region=${encodeURIComponent(addressRegion)}`);
                 const data = await res.json();
                 if (data.success) {
                     regionAddressList = data.addresses || [];
@@ -8187,6 +8275,11 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
             if (!tbody) return;
             if (regionAddressList.length === 0) {
                 tbody.innerHTML = '';
+                if (hint) {
+                    hint.textContent = addressRegion === 'US'
+                        ? '美国地址池为空，请点击「生成美国免税地址」或「手动新增」。'
+                        : `${ADDRESS_REGION_LABELS[addressRegion] || addressRegion} 地址池为空，请点击「手动新增」添加与支付地区一致的账单地址。`;
+                }
                 if (hint) hint.style.display = 'block';
                 lucide.createIcons();
                 return;
@@ -8235,18 +8328,20 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                 if (editId) editId.value = String(addr.id);
                 document.getElementById('addr_line1').value = addr.line1 || '';
                 document.getElementById('addr_city').value = addr.city || '';
-                document.getElementById('addr_state').value = normalizeUsStateInput(addr.state || '');
+                document.getElementById('addr_state').value = addressRegion === 'US'
+                    ? normalizeUsStateInput(addr.state || '')
+                    : (addr.state || '');
                 document.getElementById('addr_postal_code').value = addr.postal_code || '';
                 document.getElementById('addr_country').value = addr.country || '';
             } else {
-                if (title) title.textContent = '新增地址模板';
+                if (title) title.textContent = `新增${ADDRESS_REGION_LABELS[addressRegion] || addressRegion}地址模板`;
                 if (submitLabel) submitLabel.textContent = '保存';
                 if (editId) editId.value = '';
                 document.getElementById('addr_line1').value = '';
                 document.getElementById('addr_city').value = '';
                 document.getElementById('addr_state').value = '';
                 document.getElementById('addr_postal_code').value = '';
-                document.getElementById('addr_country').value = 'US';
+                document.getElementById('addr_country').value = addressRegion;
             }
             lucide.createIcons();
         }
@@ -8296,8 +8391,18 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
             } else if (values.country) {
                 values.country = values.country.toUpperCase();
             }
-            values.state = normalizeUsStateInput(values.state);
-            if (values.state && !US_TAX_FREE_STATE_NAMES.some((s) => s.toLowerCase() === values.state.toLowerCase())) {
+            if (values.country && values.country !== addressRegion) {
+                const errEl = document.getElementById('addr_country_err');
+                if (errEl) {
+                    errEl.textContent = `国家代码必须与地址池地区一致：${addressRegion}`;
+                    errEl.style.display = 'block';
+                }
+                valid = false;
+            }
+            if (addressRegion === 'US') {
+                values.state = normalizeUsStateInput(values.state);
+            }
+            if (addressRegion === 'US' && values.state && !US_TAX_FREE_STATE_NAMES.some((s) => s.toLowerCase() === values.state.toLowerCase())) {
                 const errEl = document.getElementById('addr_state_err');
                 if (errEl) {
                     errEl.textContent = '请填写免税州完整英文名：Oregon / Delaware / Montana / New Hampshire / Alaska';
@@ -8314,7 +8419,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
 
             const editId = document.getElementById('address_edit_id')?.value;
             const isEdit = Boolean(editId);
-            const payload = { ...values, region: 'US' };
+            const payload = { ...values, region: addressRegion };
 
             try {
                 let res;
@@ -8337,7 +8442,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                 }
                 showMessage(isEdit ? '地址模板已更新' : '地址模板已添加', 'success');
                 hideAddressForm();
-                await loadAddressList('US');
+                await loadAddressList(addressRegion);
             } catch (e) {
                 showMessage(e.message || '保存失败', 'error');
             }
@@ -8367,7 +8472,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                     throw new Error(data.error || data.message || '删除失败');
                 }
                 showMessage('地址模板已删除', 'success');
-                await loadAddressList('US');
+                await loadAddressList(addressRegion);
             } catch (e) {
                 showMessage(e.message || '删除失败', 'error');
             }
@@ -8391,7 +8496,8 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                     throw new Error(data.error || data.message || '生成失败');
                 }
                 showMessage(`已生成 ${data.count} 条美国免税地址`, 'success');
-                await loadAddressList('US');
+                addressRegion = 'US';
+                await loadAddressList(addressRegion);
             } catch (e) {
                 showMessage(e.message || '生成失败', 'error');
             }
@@ -8410,13 +8516,13 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
             );
             if (!ok) return;
             try {
-                const res = await authFetch('/api/admin/addresses/unbound?region=US', { method: 'DELETE' });
+                const res = await authFetch(`/api/admin/addresses/unbound?region=${encodeURIComponent(addressRegion)}`, { method: 'DELETE' });
                 const data = await res.json();
                 if (!res.ok || !data.success) {
                     throw new Error(data.error || data.message || '清空失败');
                 }
                 showMessage(`已清空 ${data.count} 条未绑定地址`, 'success');
-                await loadAddressList('US');
+                await loadAddressList(addressRegion);
             } catch (e) {
                 showMessage(e.message || '清空失败', 'error');
             }
@@ -8425,6 +8531,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
 
         bootAdmin();
     </script>
+    <script src="js/admin-shell.js"></script>
 </body>
 
 </html>

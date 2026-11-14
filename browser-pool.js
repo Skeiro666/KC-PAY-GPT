@@ -7,6 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const net = require('net');
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
@@ -311,25 +312,88 @@ function releaseSlot(slotId) {
     });
 }
 
-function acquireSlot(jobKey) {
-    return new Promise((resolve, reject) => {
-        if (!initialized || !slots.length) {
-            resolve(null);
-            return;
-        }
-        const free = slots.find((s) => !s.inUse);
-        if (free) {
-            free.inUse = true;
-            free.jobKey = jobKey || '';
-            free.uses += 1;
-            resolve({
-                slotId: free.slotId,
-                cdpUrl: free.cdpUrl,
-                port: free.port
-            });
-            return;
-        }
+function isSlotAlive(slot) {
+    return new Promise((resolve) => {
+        const socket = net.connect({ host: '127.0.0.1', port: slot.port });
+        const finish = (alive) => {
+            socket.removeAllListeners();
+            socket.destroy();
+            resolve(alive);
+        };
+        socket.setTimeout(1500);
+        socket.once('connect', () => finish(true));
+        socket.once('timeout', () => finish(false));
+        socket.once('error', () => finish(false));
+    });
+}
 
+async function reviveSlot(slot) {
+    try {
+        await slot.persistentContext.close();
+    } catch (_) { /* ignore */ }
+    try {
+        const fresh = await warmSlot(slot.slotId);
+        fresh.inUse = slot.inUse;
+        fresh.jobKey = slot.jobKey;
+        const index = slots.indexOf(slot);
+        if (index >= 0) {
+            slots[index] = fresh;
+        } else {
+            slots.push(fresh);
+        }
+        console.log(`[BrowserPool] ✅ slot-${slot.slotId} 已重新就绪 ${fresh.cdpUrl}`);
+        return fresh;
+    } catch (error) {
+        console.error(`[BrowserPool] ❌ slot-${slot.slotId} 重启失败: ${error.message}`);
+        const index = slots.indexOf(slot);
+        if (index >= 0) {
+            slots.splice(index, 1);
+        }
+        return null;
+    }
+}
+
+async function acquireSlot(jobKey) {
+    if (!initialized || !slots.length) {
+        return null;
+    }
+    while (slots.length) {
+        const free = slots.find((s) => !s.inUse);
+        if (!free) {
+            break;
+        }
+        // Reserve before the asynchronous probe so another request cannot take this slot.
+        free.inUse = true;
+        free.jobKey = jobKey || '';
+        if (!(await isSlotAlive(free))) {
+            console.warn(`[BrowserPool] ⚠️ slot-${free.slotId} CDP 端口 ${free.port} 不可用，正在重启槽位...`);
+            const revived = await reviveSlot(free);
+            if (!revived) {
+                continue;
+            }
+            revived.inUse = true;
+            revived.jobKey = jobKey || '';
+            revived.uses += 1;
+            return {
+                slotId: revived.slotId,
+                cdpUrl: revived.cdpUrl,
+                port: revived.port
+            };
+        }
+        free.inUse = true;
+        free.jobKey = jobKey || '';
+        free.uses += 1;
+        return {
+            slotId: free.slotId,
+            cdpUrl: free.cdpUrl,
+            port: free.port
+        };
+    }
+    if (!slots.length) {
+        return null;
+    }
+
+    return new Promise((resolve, reject) => {
         const entry = {
             jobKey: jobKey || '',
             resolve,

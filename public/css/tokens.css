@@ -1,0 +1,548 @@
+/* ============================================================
+ * KC-PAY-GPT 设计令牌 —— Orion 风格（移植自 orion-key / shadcn-ui）
+ *
+ * 规则：
+ * 1. 这里只放变量、字体栈和全局基线，不放具体组件样式。
+ * 2. 历史变量名（--primary-soft / --accent / --surface-soft …）保留为
+ *    兼容别名，供历史样式表与内联样式继续引用，不得删除。
+ * 3. 本文件必须在页面既有 <style> 之前或之后均可，具体组件覆盖由
+ *    style.css / css/admin.css 负责。
+ *
+ * 主题机制：
+ *   <html class="dark">            切换暗色
+ *   <html data-color="orange">     切换配色（coral 为默认，无 data-color）
+ * ============================================================ */
+
+:root {
+    /* ---------- 核心色板（HSL 三元组，供 hsl() 组合） ---------- */
+    --h-bg: 30 20% 98%;
+    --h-fg: 20 20% 10%;
+    --h-card: 0 0% 100%;
+    --h-card-fg: 20 20% 10%;
+    --h-primary: 12 85% 55%;
+    --h-primary-fg: 0 0% 100%;
+    --h-secondary: 30 15% 95%;
+    --h-secondary-fg: 20 15% 15%;
+    --h-muted: 30 10% 95%;
+    --h-muted-fg: 20 8% 46%;
+    --h-accent: 30 15% 93%;
+    --h-accent-fg: 20 15% 15%;
+    --h-destructive: 0 84% 60%;
+    --h-destructive-fg: 0 0% 98%;
+    --h-border: 30 10% 88%;
+    --h-input: 30 10% 88%;
+    --h-ring: 12 85% 55%;
+    --h-sidebar: 30 15% 97%;
+    --h-sidebar-fg: 20 15% 26%;
+    --h-sidebar-accent: 30 12% 94%;
+    --h-sidebar-border: 30 10% 90%;
+
+    /* ---------- 品牌与主色 ---------- */
+    --primary: hsl(var(--h-primary));
+    --primary-rgb: 238, 82, 43;
+    --primary-hover: hsl(12 85% 48%);
+    --primary-active: hsl(12 85% 42%);
+    --primary-soft: hsla(var(--h-primary) / 0.08);
+    --primary-glow: hsla(var(--h-primary) / 0.22);
+
+    /* 兼容别名（旧样式引用） */
+    --accent: var(--primary);
+    --accent-soft: var(--primary-soft);
+    --accent-glow: var(--primary-glow);
+
+    /* ---------- 背景与表面 ---------- */
+    --bg-page: hsl(var(--h-bg));
+    --bg-dark: hsl(var(--h-bg));
+    --surface-solid: hsl(var(--h-card));
+    --surface: hsl(var(--h-card));
+    --surface-soft: hsl(var(--h-secondary));
+    --surface-hover: hsl(var(--h-accent));
+    --surface-glass: hsl(var(--h-bg) / 0.82);
+    --surface-glass-strong: hsl(var(--h-card) / 0.94);
+
+    /* 兼容别名（后台旧变量） */
+    --card-bg: hsl(var(--h-card));
+    --sidebar-bg: hsl(var(--h-sidebar));
+    --glass: var(--surface-glass);
+    --glass-border: hsl(var(--h-border));
+    --glass-highlight: hsla(0 0% 100% / 0.85);
+    --border: hsl(var(--h-border));
+    --border-strong: hsl(30 10% 78%);
+    --divider: hsl(var(--h-border));
+
+    /* ---------- 文本 ---------- */
+    --text-main: hsl(var(--h-fg));
+    --text-secondary: hsl(20 15% 24%);
+    --text-dim: hsl(var(--h-muted-fg));
+    --text-muted: hsl(20 8% 58%);
+
+    /* ---------- 状态色（与 shadcn 语义对齐） ---------- */
+    --success: #059669;
+    --success-soft: rgba(5, 150, 105, 0.10);
+    --error: hsl(var(--h-destructive));
+    --error-soft: rgba(239, 68, 68, 0.10);
+    --warning: #d97706;
+    --warning-soft: rgba(217, 119, 6, 0.12);
+    --info: #0284c7;
+    --info-soft: rgba(2, 132, 199, 0.10);
+
+    /* ---------- 圆角（shadcn: radius 0.5rem 为基准） ---------- */
+    --radius-xs: 6px;
+    --radius-sm: 6px;
+    --radius-control: 8px;
+    --radius: 10px;
+    --radius-lg: 12px;
+    --radius-card: 12px;
+    --radius-dialog: 14px;
+    --radius-pill: 999px;
+
+    /* ---------- 阴影 ---------- */
+    --shadow-sm: 0 1px 2px 0 hsl(20 20% 10% / 0.04);
+    --shadow-card: 0 1px 2px 0 hsl(20 20% 10% / 0.04);
+    --shadow: 0 4px 12px -2px hsl(20 20% 10% / 0.08);
+    --shadow-lg: 0 12px 32px -8px hsl(20 20% 10% / 0.16);
+    --shadow-dialog: 0 24px 64px -16px hsl(20 20% 10% / 0.24);
+    --shadow-focus: 0 0 0 3px hsla(var(--h-primary) / 0.20);
+
+    /* ---------- 材质与间距 ---------- */
+    --glass-blur: 12px;
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
+    --space-7: 48px;
+    --control-height: 40px;
+    --content-max: 1120px;
+
+    /* ---------- 字体 ---------- */
+    --font-sans: "Outfit", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue",
+        Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas,
+        "Liberation Mono", monospace;
+
+    /* ---------- 渐变 / 光晕（配色方案驱动） ---------- */
+    --scheme-gradient-from: 0 80% 55%;
+    --scheme-gradient-via: 12 85% 55%;
+    --scheme-gradient-to: 30 90% 50%;
+    --scheme-glow: 12 85% 55%;
+}
+
+/* ============================================================
+ * 暗色主题
+ * ============================================================ */
+.dark {
+    --h-bg: 20 15% 4%;
+    --h-fg: 30 15% 95%;
+    --h-card: 20 12% 10%;
+    --h-card-fg: 30 15% 95%;
+    --h-primary: 12 85% 58%;
+    --h-secondary: 20 10% 14%;
+    --h-secondary-fg: 30 15% 95%;
+    --h-muted: 20 10% 15%;
+    --h-muted-fg: 30 10% 65%;
+    --h-accent: 20 10% 17%;
+    --h-accent-fg: 30 15% 95%;
+    --h-destructive: 0 62% 46%;
+    --h-border: 20 10% 17%;
+    --h-input: 20 10% 17%;
+    --h-ring: 12 85% 58%;
+    --h-sidebar: 20 12% 8%;
+    --h-sidebar-fg: 30 15% 95%;
+    --h-sidebar-accent: 20 10% 14%;
+    --h-sidebar-border: 20 10% 16%;
+
+    --primary-rgb: 244, 92, 52;
+    --primary-hover: hsl(12 85% 64%);
+    --primary-active: hsl(12 85% 70%);
+    --border-strong: hsl(20 10% 26%);
+    --text-secondary: hsl(30 12% 86%);
+    --text-muted: hsl(30 10% 55%);
+    --glass-highlight: hsla(0 0% 100% / 0.06);
+    --surface-glass: hsl(var(--h-bg) / 0.82);
+    --surface-glass-strong: hsl(var(--h-card) / 0.94);
+
+    --success: #34d399;
+    --success-soft: rgba(52, 211, 153, 0.14);
+    --error: #f87171;
+    --error-soft: rgba(248, 113, 113, 0.14);
+    --warning: #fbbf24;
+    --warning-soft: rgba(251, 191, 36, 0.14);
+    --info: #38bdf8;
+    --info-soft: rgba(56, 189, 248, 0.14);
+
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+    --shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+    --shadow: 0 4px 12px -2px rgb(0 0 0 / 0.5);
+    --shadow-lg: 0 12px 32px -8px rgb(0 0 0 / 0.6);
+    --shadow-dialog: 0 24px 64px -16px rgb(0 0 0 / 0.7);
+
+    --scheme-gradient-from: 0 80% 58%;
+    --scheme-gradient-via: 12 85% 58%;
+    --scheme-gradient-to: 30 90% 52%;
+    --scheme-glow: 12 85% 58%;
+}
+
+/* ============================================================
+ * 配色方案（可选，覆盖主色）
+ * ============================================================ */
+[data-color="orange"] {
+    --h-primary: 24 85% 52%;
+    --h-ring: 24 85% 52%;
+    --scheme-gradient-from: 24 90% 53%;
+    --scheme-gradient-via: 38 92% 50%;
+    --scheme-gradient-to: 45 93% 47%;
+    --scheme-glow: 24 85% 52%;
+}
+
+.dark[data-color="orange"] {
+    --h-primary: 24 85% 55%;
+    --h-ring: 24 85% 55%;
+    --scheme-glow: 24 85% 55%;
+}
+
+[data-color="emerald"] {
+    --h-primary: 160 75% 38%;
+    --h-ring: 160 75% 38%;
+    --scheme-gradient-from: 160 75% 40%;
+    --scheme-gradient-via: 175 70% 42%;
+    --scheme-gradient-to: 190 80% 45%;
+    --scheme-glow: 160 75% 40%;
+}
+
+.dark[data-color="emerald"] {
+    --h-primary: 160 75% 45%;
+    --h-ring: 160 75% 45%;
+    --scheme-glow: 160 75% 45%;
+}
+
+[data-color="blue"] {
+    --h-primary: 215 90% 52%;
+    --h-ring: 215 90% 52%;
+    --scheme-gradient-from: 215 90% 55%;
+    --scheme-gradient-via: 235 70% 55%;
+    --scheme-gradient-to: 200 85% 52%;
+    --scheme-glow: 215 90% 55%;
+}
+
+.dark[data-color="blue"] {
+    --h-primary: 215 90% 58%;
+    --h-ring: 215 90% 58%;
+    --scheme-glow: 215 90% 58%;
+}
+
+[data-color="pink"] {
+    --h-primary: 340 82% 52%;
+    --h-ring: 340 82% 52%;
+    --scheme-gradient-from: 340 82% 55%;
+    --scheme-gradient-via: 350 75% 52%;
+    --scheme-gradient-to: 310 70% 55%;
+    --scheme-glow: 340 82% 55%;
+}
+
+.dark[data-color="pink"] {
+    --h-primary: 340 82% 58%;
+    --h-ring: 340 82% 58%;
+    --scheme-glow: 340 82% 58%;
+}
+
+[data-color="purple"] {
+    --h-primary: 265 70% 52%;
+    --h-ring: 265 70% 52%;
+    --scheme-gradient-from: 265 70% 55%;
+    --scheme-gradient-via: 280 65% 52%;
+    --scheme-gradient-to: 310 70% 55%;
+    --scheme-glow: 265 70% 55%;
+}
+
+.dark[data-color="purple"] {
+    --h-primary: 265 70% 60%;
+    --h-ring: 265 70% 60%;
+    --scheme-glow: 265 70% 60%;
+}
+
+/* ============================================================
+ * 全局基线
+ * ============================================================ */
+html {
+    -webkit-text-size-adjust: 100%;
+    color-scheme: light;
+}
+
+html.dark {
+    color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+}
+
+html,
+body {
+    font-family: var(--font-sans);
+    color: var(--text-main);
+    background-color: var(--bg-page);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* 主题切换时平滑过渡 */
+html,
+body {
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+body {
+    font-size: 15px;
+    line-height: 1.55;
+}
+
+code,
+kbd,
+samp,
+pre {
+    font-family: var(--font-mono);
+}
+
+/* 键盘焦点必须始终可见（鼠标点击不显示） */
+:focus-visible {
+    outline: 2px solid hsl(var(--h-ring));
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
+}
+
+/* 动效降级 */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* 细滚动条 */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: hsl(var(--h-fg) / 0.18);
+    border-radius: var(--radius-pill);
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--h-fg) / 0.32);
+    background-clip: content-box;
+}
+
+::selection {
+    background: hsla(var(--h-primary) / 0.20);
+    color: var(--text-main);
+}
+
+/* 图标加载失败回退：lucide 未就绪时占位不塌陷 */
+i[data-lucide] {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    flex: 0 0 auto;
+}
+
+svg {
+    flex-shrink: 0;
+}
+
+/* 浏览器自动填充背景跟随主题 */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+textarea:-webkit-autofill,
+select:-webkit-autofill {
+    -webkit-box-shadow: 0 0 0 1000px hsl(var(--h-card)) inset !important;
+    -webkit-text-fill-color: var(--text-main) !important;
+    caret-color: var(--text-main) !important;
+    transition: background-color 5000s ease-in-out 0s;
+}
+
+/* iOS Safari 输入聚焦不自动放大 */
+@media screen and (max-width: 767px) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
+    select,
+    textarea {
+        font-size: 16px;
+    }
+}
+
+/* ============================================================
+ * 主题切换控件（前台导航与后台侧栏共用）
+ * 由 js/theme.js 注入
+ * ============================================================ */
+
+.theme-toggle-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.theme-toggle {
+    display: inline-grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-control);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+.theme-toggle:hover {
+    background: var(--surface-hover);
+    color: var(--text-main);
+}
+
+.theme-toggle svg {
+    width: 16px;
+    height: 16px;
+}
+
+.theme-toggle .icon-sun {
+    display: none;
+}
+
+.dark .theme-toggle .icon-sun {
+    display: block;
+}
+
+.dark .theme-toggle .icon-moon {
+    display: none;
+}
+
+.scheme-dots {
+    display: none;
+    align-items: center;
+    gap: 5px;
+}
+
+@media (min-width: 641px) {
+    .scheme-dots {
+        display: inline-flex;
+    }
+}
+
+.scheme-dot {
+    width: 11px;
+    height: 11px;
+    padding: 0;
+    border: 2px solid transparent;
+    border-radius: 50%;
+    background-clip: padding-box;
+    cursor: pointer;
+    transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.scheme-dot:hover {
+    transform: scale(1.25);
+}
+
+.scheme-dot.is-active {
+    border-color: var(--text-main);
+    transform: scale(1.1);
+}
+
+/* ============================================================
+ * 配色方案驱动的通用工具类
+ * ============================================================ */
+
+/* 渐变文字（Hero 标题） */
+.scheme-gradient-text {
+    background: linear-gradient(to right,
+            hsl(var(--scheme-gradient-from)),
+            hsl(var(--scheme-gradient-via)),
+            hsl(var(--scheme-gradient-to)));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    color: transparent;
+}
+
+/* 渐变按钮 */
+.scheme-gradient-btn {
+    background: linear-gradient(135deg,
+            hsl(var(--scheme-gradient-from)),
+            hsl(var(--scheme-gradient-via)),
+            hsl(var(--scheme-gradient-to)));
+    background-size: 200% 200%;
+    background-position: 0% 50%;
+    color: #fff;
+    transition: background-position 0.4s ease, filter 0.2s ease, transform 0.1s ease;
+}
+
+.scheme-gradient-btn:hover {
+    background-position: 100% 50%;
+}
+
+/* 浅色描边按钮 */
+.scheme-tint-btn {
+    color: hsl(var(--scheme-glow));
+    background: hsl(var(--scheme-glow) / 0.08);
+    box-shadow: inset 0 0 0 1px hsl(var(--scheme-glow) / 0.15);
+}
+
+.scheme-tint-btn:hover {
+    background: hsl(var(--scheme-glow) / 0.14);
+    box-shadow: inset 0 0 0 1px hsl(var(--scheme-glow) / 0.25);
+}
+
+.dark .scheme-tint-btn {
+    background: hsl(var(--scheme-glow) / 0.12);
+    box-shadow: inset 0 0 0 1px hsl(var(--scheme-glow) / 0.22);
+}
+
+.dark .scheme-tint-btn:hover {
+    background: hsl(var(--scheme-glow) / 0.20);
+}
+
+/* 按钮发光 */
+.scheme-glow {
+    box-shadow: 0 10px 15px -3px hsl(var(--scheme-glow) / 0.25),
+        0 4px 6px -4px hsl(var(--scheme-glow) / 0.25);
+}
+
+.scheme-glow:hover {
+    box-shadow: 0 20px 25px -5px hsl(var(--scheme-glow) / 0.35),
+        0 8px 10px -6px hsl(var(--scheme-glow) / 0.35);
+}
+
+/* 光晕色块 */
+.scheme-blob {
+    background: radial-gradient(circle,
+            hsl(var(--scheme-glow) / 0.10) 0%,
+            transparent 70%);
+}
+
+.dark .scheme-blob {
+    background: radial-gradient(circle,
+            hsl(var(--scheme-glow) / 0.16) 0%,
+            transparent 70%);
+}
